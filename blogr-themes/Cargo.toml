@@ -13,4 +13,4 @@ toml = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 include_dir = "0.7"
-ratatui = "0.24"
+ratatui = "0.28"
