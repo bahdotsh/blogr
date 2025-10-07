@@ -28,7 +28,7 @@ pub async fn handle_list() -> Result<()> {
         // Separate themes by type
         let mut blog_themes = Vec::new();
         let mut personal_themes = Vec::new();
-        
+
         for (name, theme) in all_themes {
             let info = theme.info();
             if info.site_type == "blog" {
@@ -37,7 +37,7 @@ pub async fn handle_list() -> Result<()> {
                 personal_themes.push((name, info));
             }
         }
-        
+
         // Display blog themes
         if !blog_themes.is_empty() {
             println!("\n📝 Blog Themes (for traditional blogs with posts):");
@@ -56,7 +56,7 @@ pub async fn handle_list() -> Result<()> {
                 );
             }
         }
-        
+
         // Display personal themes
         if !personal_themes.is_empty() {
             println!("\n👤 Personal Website Themes (for portfolios and personal sites):");
@@ -149,11 +149,11 @@ pub async fn handle_set(name: String) -> Result<()> {
     // Validate theme compatibility with site type
     let theme_info = theme.info();
     let site_type = &config.site.site_type;
-    
+
     if theme_info.site_type != *site_type {
         let blog_themes = "minimal-retro, obsidian, terminal-candy";
         let personal_themes = "dark-minimal, musashi, slate-portfolio, typewriter";
-        
+
         return Err(anyhow!(
             "❌ Theme '{}' is a {} theme, but your site is configured as a {} site.\n\n\
             {} themes: {}\n\
