@@ -610,6 +610,34 @@ show_date_stamp = true             # Vintage date stamp
 cursor_blink = true                # Blinking cursor effect
 ```
 
+### Brutja Theme Configuration
+
+Configure the following fields in `blogr.toml`:
+```toml
+[theme.config]
+css = "static/custom.css"
+hero_title = "Benjamin Corey"
+hero_subtitle = "Software developer in Philadelphia"
+github_username = "bcorey"
+linkedin_username = "benjamin-corey-b18b5517a"
+```
+
+And set the look of the application with these CSS variables:
+```css
+:root {
+    --bg: #f0ffe3;
+    --fg: #7f2172;
+    /* should be an opacity of the fg */
+    --hint: #7f217244;
+    --accent-primary: #a7d3d1;
+    --on-accent-primary: var(--fg);
+    --accent-secondary: #E20018;
+    --on-accent-secondary: white;
+    --accent-tertiary: #fbffb5;
+    --on-accent-tertiary: var(--fg);
+}
+```
+
 ### Available Themes:
 
 - **Minimal Retro** - Clean, artistic design with retro aesthetics (for blogs)
@@ -619,6 +647,7 @@ cursor_blink = true                # Blinking cursor effect
 - **Musashi** - Dynamic modern theme with smooth animations (for personal sites)
 - **Slate Portfolio** - Glassmorphic professional portfolio theme (for personal sites)
 - **Typewriter** - Vintage typewriter aesthetics with nostalgic charm (for personal sites)
+- **Brutja** A minimal brutalist look (for blogs)
 
 **Obsidian Theme Setup**
 

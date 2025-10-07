@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% import "post_card.html" as post_card %}
+
+{% block content %}
+<div>
+    <section class="hero-section">
+        <div>
+            <h1 class="hero-title">{{ site.theme.config.hero_title | default(value='Welcome') }}</h1>
+            <i>
+                <h3>{{ site.theme.config.hero_subtitle | default(value='Configure this theme in blogr.toml') }}</h3>
+            </i>
+            <p>{{ site.blog.description }}</p>
+        </div>
+    </section>
+
+    {% if posts %}
+    <section>
+        <h4>Recent Posts</h4>
+        <div>
+            {% for post in posts %}
+            {{ post_card::input(post=post) }}
+            {% endfor %}
+        </div>
+
+        {% if has_more %}
+        <div class="view-more">
+            <a href="{{ url(path='archive.html') | safe }}" class="btn-view-more">View All Posts ({{ total_posts }}
+                total) →</a>
+        </div>
+        {% endif %}
+    </section>
+    {% else %}
+    <section class="no-posts">
+        <div>
+            <h3>No posts yet</h3>
+            <p>This blog is just getting started. Check back soon for new content!</p>
+        </div>
+    </section>
+    {% endif %}
+</div>
+{% endblock %}

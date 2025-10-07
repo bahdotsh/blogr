@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% import "post_card.html" as post_card %}
+
+{% block title %}Archive - {{ site.blog.title }}{% endblock %}
+
+{% block meta %}
+<meta name="description" content="Archive of all posts from {{ site.blog.title }}">
+{% endblock %}
+
+{% block content %}
+<div class="archive-page">
+    <header class="archive-header">
+        <h1 class="archive-title">Archive</h1>
+        <p class="archive-subtitle">All posts from {{ site.blog.title }}</p>
+    </header>
+
+    {% if posts %}
+    <div class="archive-content">
+        {% if posts_by_year %}
+        {% for year, year_posts in posts_by_year %}
+        <section class="archive-year">
+            <h2 class="year-title">{{ year }}</h2>
+            <div class="year-posts">
+                {% for post in year_posts %}
+                {{ post_card::input(post=post) }}
+                {% endfor %}
+            </div>
+        </section>
+        {% endfor %}
+        {% else %}
+        <div class="archive-posts">
+            {% for post in posts %}
+            <article class="archive-post">
+                <div class="post-date">
+                    <time datetime="{{ post.metadata.date }}">
+                        {{ post.metadata.date | date(format="%B %d, %Y") }}
+                    </time>
+                </div>
+                <div class="post-content">
+                    <h3 class="post-title">
+                        <a href="{{ url(path='posts/' ~ post.metadata.slug ~ '.html') | safe }}">{{ post.metadata.title
+                            }}</a>
+                    </h3>
+                    {% if post.metadata.description %}
+                    <p class="post-description">{{ post.metadata.description }}</p>
+                    {% endif %}
+                    <div class="post-meta">
+                        {% if post.metadata.author %}
+                        <span class="post-author">by {{ post.metadata.author }}</span>
+                        {% endif %}
+                        {% if post.metadata.status == "draft" %}
+                        <span class="draft-badge">Draft</span>
+                        {% endif %}
+                    </div>
+                </div>
+            </article>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="no-posts">
+        <p>No posts found in the archive.</p>
+        <p class="no-posts-hint">Posts will appear here once they are published.</p>
+    </div>
+    {% endif %}
+
+    <div class="archive-navigation">
+        <a href="{{ url(path='') | safe }}" class="back-home">← Home</a>
+        <a href="{{ url(path='tags/index.html') | safe }}" class="view-tags">View Tags →</a>
+    </div>
+</div>
+{% endblock %}

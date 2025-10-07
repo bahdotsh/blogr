@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% import "post_card.html" as post_card %}
+{% block title %}{{ tag }} - {{ site.blog.title }}{% endblock %}
+{% block meta %}
+<meta name="description" content="Posts exploring {{ tag }} on {{ site.blog.title }}" />
+{% endblock %}
+{% block content %}
+<div class="markdown-preview-sizer markdown-preview-section">
+    <div class="inline-title" contenteditable="false" spellcheck="false" tabindex="-1" enterkeyhint="done">
+        #{{ tag }}
+    </div>
+
+    <div class="backlink-pane">
+
+        <div class="search-result-container">
+            {% for post in posts %}
+            {{ post_card::input(post=post) }}
+            {% endfor %}
+        </div>
+    </div>
+
+    {% if posts | length == 0 %}
+    <!-- No posts with this tag -->
+    <div class="callout" data-callout="warning">
+        <div class="callout-content">
+            <p>
+                No posts found with the tag <span class="tag">#{{ tag }}</span>.
+            </p>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Navigation callout -->
+    <div class="callout" data-callout="tip">
+        <div class="callout-content">
+            <p>
+                Browse all
+                <a href="{{ url(path='tags/') }}" class="internal-link">tags</a>, view the
+                <a href="{{ url(path='archive.html') }}" class="internal-link">archive</a>, or return to
+                <a href="{{ url(path='') }}" class="internal-link">home</a>.
+            </p>
+        </div>
+    </div>
+</div>
+{% endblock %}

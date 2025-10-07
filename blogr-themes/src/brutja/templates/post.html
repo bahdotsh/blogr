@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block content %}
+<article class="post-article">
+    <header>
+        <h1 class="post-title">{{ post.metadata.title }}</h1>
+
+        <div class="post-meta">
+            <time datetime="{{ post.metadata.date }}">
+                {{ post.metadata.date | date(format="%B %d, %Y") }}
+            </time>
+
+            {% if post.metadata.author %}
+            <span>by {{ post.metadata.author }}</span>
+            {% endif %}
+
+            {% if post.metadata.status == "draft" %}
+            <span class="draft-badge">Draft</span>
+            {% endif %}
+        </div>
+
+        {% if post.metadata.tags %}
+        <div class="post-tags">
+            {% for tag in post.metadata.tags %}
+            <a href="{{ url(path='tags/' ~ tag ~ '.html') | safe }}" class="tag">#{{ tag }}</a>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </header>
+
+    <div class="post-content">
+        {{ content | safe }}
+    </div>
+
+    <footer class="post-footer">
+        <div class="post-navigation">
+            <a href="{{ url(path='') | safe }}" class="back-home">← Home</a>
+            <a href="{{ url(path='archive.html') | safe }}" class="view-archive">Archive →</a>
+        </div>
+    </footer>
+</article>
+{% endblock %}

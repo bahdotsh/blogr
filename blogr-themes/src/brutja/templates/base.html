@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}{{ site.blog.title }}{% endblock %}</title>
+
+    <!-- Favicon -->
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📝</text></svg>" />
+
+    {% block meta %}
+    <meta name="description" content="{{ site.blog.description }}" />
+    <meta name="author" content="{{ site.blog.author }}" />
+    {% endblock %}
+
+    <!-- Load bundled default brutja CSS -->
+    <link rel="stylesheet" href="{{ url(path='css/brutja-default.css') | safe }}" />
+
+    <!-- Load user-supplied custom CSS with error handling -->
+    <link rel="stylesheet" href="{{ url(path=site.theme.config.css | default(value='static/styles.css')) | safe }}"
+        onerror="this.onerror=null;console.warn('CSS not found - using default styles.');"
+        onload="console.log('CSS loaded successfully');" />
+
+    <meta name="blogr-base" content="{{ url(path='') | safe }}" />
+    {% block extra_head %}{% endblock %}
+
+    <script>
+        // Wait for DOM to be ready
+        document.addEventListener("DOMContentLoaded", function () {
+            var mode =
+                "{{ site.theme.config.color_mode | default(value='auto') }}";
+            var isDark =
+                window.matchMedia &&
+                window.matchMedia("(prefers-color-scheme: dark)").matches;
+            var body = document.body;
+
+            if (body) {
+                if (mode === "auto") {
+                    body.classList.toggle("theme-dark", isDark);
+                    body.classList.toggle("theme-light", !isDark);
+                } else {
+                    body.classList.add(
+                        mode === "dark" ? "theme-dark" : "theme-light",
+                    );
+                }
+
+                // Listen for system theme changes
+                if (mode === "auto" && window.matchMedia) {
+                    window
+                        .matchMedia("(prefers-color-scheme: dark)")
+                        .addEventListener("change", function (e) {
+                            body.classList.toggle("theme-dark", e.matches);
+                            body.classList.toggle(
+                                "theme-light",
+                                !e.matches,
+                            );
+                        });
+                }
+            }
+        });
+    </script>
+</head>
+
+<body class="workspace-leaf-content">
+    <div class="app-container">
+        <div class="workspace">
+            <div class="workspace-leaf-content">
+                <div class="center-column">
+                    <div class="navbar">
+                        <div class="navbar-link">
+                            <a href="{{ url(path='') | safe }}">Home</a>
+                        </div>
+                        {% if site.theme.config.github_username %}
+                        <div class="navbar-link">
+                            <a
+                                href="{{ url(path='https://github.com/' ~ site.theme.config.github_username) | safe }}">github</a>
+                        </div>
+                        {% endif %}
+                        {% if site.theme.config.linkedin_username %}
+                        <div class="navbar-link">
+                            <a
+                                href="{{ url(path='https://linkedin.com/in/' ~ site.theme.config.linkedin_username) | safe }}">linkedin</a>
+                        </div>
+                        {% endif %}
+                        <!-- Search bar -->
+                        <form id="search-form" class="search-form" role="search">
+                            <div class="search-container">
+                                <input id="search-input" name="q" type="search" placeholder="Search posts..."
+                                    autocomplete="off" aria-label="Search posts" />
+                                <button type="submit" class="search-button" aria-label="Search">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <circle cx="11" cy="11" r="8"></circle>
+                                        <path d="m21 21-4.35-4.35"></path>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div id="search-results" class="search-results" hidden></div>
+                        </form>
+                    </div>
+                    <!-- Page content -->
+                    <div class="view-content" style="width: 100%; display: flex; justify-content: center;">
+                        <div class="markdown-reading-view" style="width: 100%; display: flex; justify-content: center;">
+                            <div class="markdown-preview-view markdown-rendered">
+                                <div class="markdown-preview-section">
+                                    {% block content %}{% endblock %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- Search functionality -->
+    <script src="{{ url(path='js/vendor/minisearch.min.js') | safe }}"></script>
+    <script src="{{ url(path='js/search.js') | safe }}"></script>
+
+    {% block extra_scripts %}{% endblock %}
+</body>
+
+</html>

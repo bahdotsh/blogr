@@ -1,0 +1,35 @@
+{% macro input(post) %}
+<article class="post-card">
+    <div>
+        <h2 class="post-title">
+            <a href="{{ url(path='posts/' ~ post.metadata.slug ~ '.html') | safe }}">{{ post.metadata.title
+                }}</a>
+        </h2>
+        <div class="post-meta">
+            <time datetime="{{ post.metadata.date }}">
+                {{ post.metadata.date | date(format="%B %d, %Y") }}
+            </time>
+            {% if post.metadata.author %}
+            <span>by {{ post.metadata.author }}</span>
+            {% endif %}
+            {% if post.metadata.status == "draft" %}
+            <span class="draft-badge">Draft</span>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if post.metadata.description %}
+    <div class="post-excerpt">
+        <p>{{ post.metadata.description }}</p>
+    </div>
+    {% endif %}
+
+    {% if post.metadata.tags %}
+    <div class="post-tags">
+        {% for tag in post.metadata.tags %}
+        <a href="{{ url(path='tags/' ~ tag ~ '.html') | safe }}" class="tag">#{{ tag }}</a>
+        {% endfor %}
+    </div>
+    {% endif %}
+</article>
+{% endmacro input %}

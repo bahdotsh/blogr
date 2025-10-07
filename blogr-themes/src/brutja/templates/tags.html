@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Tags - {{ site.blog.title }}{% endblock %}
+{% block meta %}
+<meta name="description" content="Browse all tags on {{ site.blog.title }}" />
+{% endblock %}
+{% block content %}
+<div class="markdown-preview-sizer markdown-preview-section">
+    <div class="inline-title" contenteditable="false" spellcheck="false" tabindex="-1" enterkeyhint="done">
+        Tags
+    </div>
+
+    {% if tags %}
+    <div class="tag-pane">
+        <div class="post-tags">
+            {% for tag_info in tags %}
+            <a href="{{ url(path='tags/' ~ tag_info.0 ~ '.html') }}" class="tag" data-tag-name="{{ tag_info.0 }}">
+                <span class="tag-name">#{{ tag_info.0 }} ({{tag_info.1}})</span>
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Tag statistics -->
+    <div class="search-result-container">
+        <div class="search-result-file-title">
+            <span class="search-result-count">{{ tags | length }} unique tags across all posts</span>
+        </div>
+
+        <div class="search-result-file-matches">
+            {% for tag_info in tags %}
+            <div class="search-result-file-match">
+                <div class="search-result-file-title">
+                    <a href="{{ url(path='tags/' ~ tag_info.0 ~ '.html') }}" class="internal-link">
+                        #{{ tag_info.0 }}
+                    </a>
+                </div>
+                <div class="search-result-file-match-content">
+                    {{ tag_info.1 }} post{% if tag_info.1 != 1 %}s{% endif
+                    %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    {% else %}
+    <!-- No tags state -->
+    <div class="callout" data-callout="warning">
+        <div class="callout-title">
+            <div class="callout-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path
+                        d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                    <line x1="12" y1="9" x2="12" y2="13" />
+                    <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+            </div>
+            <div class="callout-title-inner">No Tags Found</div>
+        </div>
+        <div class="callout-content">
+            <p>
+                No tags have been added to posts yet. Tags will appear here
+                once you start adding them to your content.
+            </p>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Navigation callout -->
+    <div class="callout" data-callout="tip">
+        <div class="callout-content">
+            <p>
+                View the complete
+                <a href="{{ url(path='archive.html') }}" class="internal-link">archive</a>
+                or return to
+                <a href="{{ url(path='') }}" class="internal-link">home</a>.
+            </p>
+        </div>
+    </div>
+</div>
+{% endblock %}

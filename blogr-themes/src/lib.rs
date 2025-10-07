@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub mod dark_minimal;
+pub mod brutja;
 pub mod minimal_retro;
 pub mod musashi;
 pub mod obsidian;
@@ -10,6 +11,7 @@ pub mod terminal_candy;
 pub mod typewriter;
 
 pub use dark_minimal::DarkMinimalTheme;
+pub use brutja::BrutjaTheme;
 pub use minimal_retro::MinimalRetroTheme;
 pub use musashi::MusashiTheme;
 pub use obsidian::ObsidianTheme;
@@ -91,6 +93,9 @@ pub fn get_all_themes() -> HashMap<String, Box<dyn Theme>> {
 
     let typewriter = TypewriterTheme::new();
     themes.insert("typewriter".to_string(), Box::new(typewriter));
+    
+    let brutja = BrutjaTheme::new();
+    themes.insert("brutja".to_string(), Box::new(brutja));
 
     themes
 }
@@ -105,6 +110,7 @@ pub fn get_theme(name: &str) -> Option<Box<dyn Theme>> {
         "musashi" => Some(Box::new(MusashiTheme::new()) as Box<dyn Theme>),
         "slate-portfolio" => Some(Box::new(SlatePortfolioTheme::new()) as Box<dyn Theme>),
         "typewriter" => Some(Box::new(TypewriterTheme::new()) as Box<dyn Theme>),
+        "brutja" => Some(Box::new(BrutjaTheme::new()) as Box<dyn Theme>),
         _ => None,
     }
 }
