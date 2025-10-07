@@ -102,6 +102,7 @@ impl Theme for TerminalCandyTheme {
             author: "Blogr Team".to_string(),
             description: "A quirky terminal-inspired theme with pastel colors, glitch effects, and playful animations. Perfect for personal websites.".to_string(),
             config_schema,
+            site_type: "blog".to_string(),
         }
     }
 

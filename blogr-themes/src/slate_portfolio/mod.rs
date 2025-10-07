@@ -104,6 +104,7 @@ impl Theme for SlatePortfolioTheme {
             author: "Blogr Team".to_string(),
             description: "A sleek, modern dark portfolio theme with polished aesthetics and smooth interactions.".to_string(),
             config_schema,
+            site_type: "personal".to_string(),
         }
     }
 

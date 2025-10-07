@@ -113,6 +113,7 @@ impl Theme for DarkMinimalTheme {
             author: "Blogr Team".to_string(),
             description: "A dark, minimal theme for personal websites with quirky interactions and clean aesthetics.".to_string(),
             config_schema,
+            site_type: "personal".to_string(),
         }
     }
 
