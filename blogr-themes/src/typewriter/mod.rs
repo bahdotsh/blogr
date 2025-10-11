@@ -93,6 +93,7 @@ impl Theme for TypewriterTheme {
             author: "Blogr Team".to_string(),
             description: "A vintage typewriter-inspired theme with nostalgic aesthetics and mechanical charm.".to_string(),
             config_schema,
+            site_type: "personal".to_string(),
         }
     }
 

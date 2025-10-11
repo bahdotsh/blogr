@@ -24,6 +24,8 @@ pub struct ThemeInfo {
     pub author: String,
     pub description: String,
     pub config_schema: HashMap<String, ConfigOption>,
+    /// Type of site this theme supports: "blog" or "personal"
+    pub site_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

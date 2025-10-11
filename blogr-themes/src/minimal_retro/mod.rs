@@ -93,6 +93,7 @@ impl Theme for MinimalRetroTheme {
             author: "Blogr Team".to_string(),
             description: "An artistic, minimal theme focused on content with expandable posts and beautiful typography".to_string(),
             config_schema,
+            site_type: "blog".to_string(),
         }
     }
 
