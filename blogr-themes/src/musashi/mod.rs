@@ -1,4 +1,4 @@
-use crate::{ConfigOption, Theme, ThemeInfo, ThemeTemplates};
+use crate::{ConfigOption, SiteType, Theme, ThemeInfo, ThemeTemplates};
 use ratatui::style::{Color, Style};
 use std::collections::HashMap;
 
@@ -102,7 +102,7 @@ impl Theme for MusashiTheme {
             author: "Blogr Team".to_string(),
             description: "An elegant monochrome theme inspired by sumi-e ink wash painting. Soft whites, warm grays, and ink blacks. Peaceful, refined, embodying the warrior's disciplined way. Fully customizable from content.md.".to_string(),
             config_schema,
-            site_type: "personal".to_string(),
+            site_type: SiteType::Personal,
         }
     }
 

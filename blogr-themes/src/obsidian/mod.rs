@@ -1,4 +1,4 @@
-use crate::{ConfigOption, Theme, ThemeInfo, ThemeTemplates};
+use crate::{ConfigOption, SiteType, Theme, ThemeInfo, ThemeTemplates};
 use ratatui::style::Style;
 use std::collections::HashMap;
 
@@ -39,7 +39,7 @@ impl Theme for ObsidianTheme {
             author: "Blogr Team".to_string(),
             description: "Adopts Obsidian community themes to style Blogr content".to_string(),
             config_schema: schema,
-            site_type: "blog".to_string(),
+            site_type: SiteType::Blog,
         }
     }
 

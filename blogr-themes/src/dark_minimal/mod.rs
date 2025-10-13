@@ -1,4 +1,4 @@
-use crate::{ConfigOption, Theme, ThemeInfo, ThemeTemplates};
+use crate::{ConfigOption, SiteType, Theme, ThemeInfo, ThemeTemplates};
 use ratatui::style::{Color, Style};
 use std::collections::HashMap;
 
@@ -113,7 +113,7 @@ impl Theme for DarkMinimalTheme {
             author: "Blogr Team".to_string(),
             description: "A dark, minimal theme for personal websites with quirky interactions and clean aesthetics.".to_string(),
             config_schema,
-            site_type: "personal".to_string(),
+            site_type: SiteType::Personal,
         }
     }
 

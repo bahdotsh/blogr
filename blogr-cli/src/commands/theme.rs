@@ -31,7 +31,7 @@ pub async fn handle_list() -> Result<()> {
 
         for (name, theme) in all_themes {
             let info = theme.info();
-            if info.site_type == "blog" {
+            if info.site_type.to_string() == "blog" {
                 blog_themes.push((name, info));
             } else {
                 personal_themes.push((name, info));
@@ -150,9 +150,23 @@ pub async fn handle_set(name: String) -> Result<()> {
     let theme_info = theme.info();
     let site_type = &config.site.site_type;
 
-    if theme_info.site_type != *site_type {
-        let blog_themes = "minimal-retro, obsidian, terminal-candy";
-        let personal_themes = "dark-minimal, musashi, slate-portfolio, typewriter";
+    if theme_info.site_type.to_string() != *site_type {
+        // Dynamically build theme lists by site type
+        let all_themes = get_all_themes();
+        let mut blog_theme_names = Vec::new();
+        let mut personal_theme_names = Vec::new();
+
+        for (theme_name, theme_obj) in all_themes {
+            let info = theme_obj.info();
+            if info.site_type.to_string() == "blog" {
+                blog_theme_names.push(theme_name);
+            } else {
+                personal_theme_names.push(theme_name);
+            }
+        }
+
+        let blog_themes = blog_theme_names.join(", ");
+        let personal_themes = personal_theme_names.join(", ");
 
         return Err(anyhow!(
             "❌ Theme '{}' is a {} theme, but your site is configured as a {} site.\n\n\

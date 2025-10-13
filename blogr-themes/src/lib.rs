@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 
 pub mod dark_minimal;
 pub mod minimal_retro;
@@ -17,6 +18,21 @@ pub use slate_portfolio::SlatePortfolioTheme;
 pub use terminal_candy::TerminalCandyTheme;
 pub use typewriter::TypewriterTheme;
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SiteType {
+    Blog,
+    Personal,
+}
+
+impl fmt::Display for SiteType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SiteType::Blog => write!(f, "blog"),
+            SiteType::Personal => write!(f, "personal"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThemeInfo {
     pub name: String,
@@ -24,8 +40,8 @@ pub struct ThemeInfo {
     pub author: String,
     pub description: String,
     pub config_schema: HashMap<String, ConfigOption>,
-    /// Type of site this theme supports: "blog" or "personal"
-    pub site_type: String,
+    /// Type of site this theme supports
+    pub site_type: SiteType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
