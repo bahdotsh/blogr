@@ -1,4 +1,4 @@
-use crate::{ConfigOption, Theme, ThemeInfo, ThemeTemplates};
+use crate::{ConfigOption, SiteType, Theme, ThemeInfo, ThemeTemplates};
 use ratatui::style::{Color, Style};
 use std::collections::HashMap;
 
@@ -93,6 +93,7 @@ impl Theme for MinimalRetroTheme {
             author: "Blogr Team".to_string(),
             description: "An artistic, minimal theme focused on content with expandable posts and beautiful typography".to_string(),
             config_schema,
+            site_type: SiteType::Blog,
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::{ConfigOption, Theme, ThemeInfo, ThemeTemplates};
+use crate::{ConfigOption, SiteType, Theme, ThemeInfo, ThemeTemplates};
 use ratatui::style::{Color, Style};
 use std::collections::HashMap;
 
@@ -104,6 +104,7 @@ impl Theme for SlatePortfolioTheme {
             author: "Blogr Team".to_string(),
             description: "A sleek, modern dark portfolio theme with polished aesthetics and smooth interactions.".to_string(),
             config_schema,
+            site_type: SiteType::Personal,
         }
     }
 

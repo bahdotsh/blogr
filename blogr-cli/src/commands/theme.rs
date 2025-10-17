@@ -25,20 +25,55 @@ pub async fn handle_list() -> Result<()> {
     if all_themes.is_empty() {
         println!("  📦 No themes available");
     } else {
+        // Separate themes by type
+        let mut blog_themes = Vec::new();
+        let mut personal_themes = Vec::new();
+
         for (name, theme) in all_themes {
             let info = theme.info();
-            let is_active = current_theme.as_ref() == Some(&name);
-            let status_icon = if is_active { "✅" } else { "📦" };
-            let status_text = if is_active { " (active)" } else { "" };
+            if info.site_type.to_string() == "blog" {
+                blog_themes.push((name, info));
+            } else {
+                personal_themes.push((name, info));
+            }
+        }
 
-            println!(
-                "  {} {}{} - {}",
-                status_icon, name, status_text, info.description
-            );
-            println!(
-                "      👤 Author: {} | 📦 Version: {}",
-                info.author, info.version
-            );
+        // Display blog themes
+        if !blog_themes.is_empty() {
+            println!("\n📝 Blog Themes (for traditional blogs with posts):");
+            for (name, info) in blog_themes {
+                let is_active = current_theme.as_ref() == Some(&name);
+                let status_icon = if is_active { "✅" } else { "📦" };
+                let status_text = if is_active { " (active)" } else { "" };
+
+                println!(
+                    "  {} {}{} - {}",
+                    status_icon, name, status_text, info.description
+                );
+                println!(
+                    "      👤 Author: {} | 📦 Version: {}",
+                    info.author, info.version
+                );
+            }
+        }
+
+        // Display personal themes
+        if !personal_themes.is_empty() {
+            println!("\n👤 Personal Website Themes (for portfolios and personal sites):");
+            for (name, info) in personal_themes {
+                let is_active = current_theme.as_ref() == Some(&name);
+                let status_icon = if is_active { "✅" } else { "📦" };
+                let status_text = if is_active { " (active)" } else { "" };
+
+                println!(
+                    "  {} {}{} - {}",
+                    status_icon, name, status_text, info.description
+                );
+                println!(
+                    "      👤 Author: {} | 📦 Version: {}",
+                    info.author, info.version
+                );
+            }
         }
     }
 
@@ -110,6 +145,47 @@ pub async fn handle_set(name: String) -> Result<()> {
 
     // Load current configuration
     let mut config = project.load_config()?;
+
+    // Validate theme compatibility with site type
+    let theme_info = theme.info();
+    let site_type = &config.site.site_type;
+
+    if theme_info.site_type.to_string() != *site_type {
+        // Dynamically build theme lists by site type
+        let all_themes = get_all_themes();
+        let mut blog_theme_names = Vec::new();
+        let mut personal_theme_names = Vec::new();
+
+        for (theme_name, theme_obj) in all_themes {
+            let info = theme_obj.info();
+            if info.site_type.to_string() == "blog" {
+                blog_theme_names.push(theme_name);
+            } else {
+                personal_theme_names.push(theme_name);
+            }
+        }
+
+        let blog_themes = blog_theme_names.join(", ");
+        let personal_themes = personal_theme_names.join(", ");
+
+        return Err(anyhow!(
+            "❌ Theme '{}' is a {} theme, but your site is configured as a {} site.\n\n\
+            {} themes: {}\n\
+            {} themes: {}\n\n\
+            💡 To use this theme, either:\n\
+            1. Choose a compatible {} theme from the list above\n\
+            2. Change your site type in blogr.toml: [site] site_type = \"{}\"",
+            name,
+            theme_info.site_type,
+            site_type,
+            "Blog",
+            blog_themes,
+            "Personal",
+            personal_themes,
+            site_type,
+            theme_info.site_type
+        ));
+    }
 
     // Update theme name
     config.theme.name = name.clone();
