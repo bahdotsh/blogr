@@ -18,8 +18,7 @@ impl Theme for DarkMinimalTheme {
         config_schema.insert(
             "primary_color".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: "#00ff88".to_string(),
+                value: toml::Value::String("#00ff88".to_string()),
                 description: "Primary accent color (neon green)".to_string(),
             },
         );
@@ -27,8 +26,7 @@ impl Theme for DarkMinimalTheme {
         config_schema.insert(
             "background_color".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: "#0a0a0a".to_string(),
+                value: toml::Value::String("#0a0a0a".to_string()),
                 description: "Background color (pure dark)".to_string(),
             },
         );
@@ -36,8 +34,7 @@ impl Theme for DarkMinimalTheme {
         config_schema.insert(
             "text_color".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: "#e0e0e0".to_string(),
+                value: toml::Value::String("#e0e0e0".to_string()),
                 description: "Main text color (soft white)".to_string(),
             },
         );
@@ -45,8 +42,7 @@ impl Theme for DarkMinimalTheme {
         config_schema.insert(
             "secondary_text_color".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: "#888888".to_string(),
+                value: toml::Value::String("#888888".to_string()),
                 description: "Secondary text color (gray)".to_string(),
             },
         );
@@ -54,10 +50,10 @@ impl Theme for DarkMinimalTheme {
         config_schema.insert(
             "font_family".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default:
+                value: toml::Value::String(
                     "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
                         .to_string(),
+                ),
                 description: "Font family".to_string(),
             },
         );
@@ -65,8 +61,7 @@ impl Theme for DarkMinimalTheme {
         config_schema.insert(
             "enable_animations".to_string(),
             ConfigOption {
-                option_type: "boolean".to_string(),
-                default: "true".to_string(),
+                value: toml::Value::Boolean(true),
                 description: "Enable smooth animations".to_string(),
             },
         );
@@ -74,8 +69,7 @@ impl Theme for DarkMinimalTheme {
         config_schema.insert(
             "show_social_icons".to_string(),
             ConfigOption {
-                option_type: "boolean".to_string(),
-                default: "true".to_string(),
+                value: toml::Value::Boolean(true),
                 description: "Show social media icons".to_string(),
             },
         );
@@ -83,8 +77,7 @@ impl Theme for DarkMinimalTheme {
         config_schema.insert(
             "show_status_bar".to_string(),
             ConfigOption {
-                option_type: "boolean".to_string(),
-                default: "true".to_string(),
+                value: toml::Value::Boolean(true),
                 description: "Show availability status bar".to_string(),
             },
         );
@@ -92,8 +85,7 @@ impl Theme for DarkMinimalTheme {
         config_schema.insert(
             "status_text".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: "Available for opportunities".to_string(),
+                value: toml::Value::String("Available for opportunities".to_string()),
                 description: "Custom text for status bar".to_string(),
             },
         );
@@ -101,8 +93,7 @@ impl Theme for DarkMinimalTheme {
         config_schema.insert(
             "status_color".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: "#00ff88".to_string(),
+                value: toml::Value::String("#00ff88".to_string()),
                 description: "Status dot color (hex code)".to_string(),
             },
         );

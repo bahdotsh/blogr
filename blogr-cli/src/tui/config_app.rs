@@ -1,19 +1,27 @@
+use std::collections::HashMap;
+
 use crate::config::Config;
 use crate::project::Project;
 use crate::tui::theme::TuiTheme;
+use anyhow::Ok;
+use blogr_themes::{get_all_themes, ThemeInfo};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    style::{Modifier, Style, Stylize},
+    text::{Line, Span, Text},
+    widgets::{
+        Block, Borders, Cell, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Row,
+        Table, TableState, Wrap,
+    },
     Frame,
 };
-use strum::{EnumIter, IntoEnumIterator, VariantArray};
+use serde::Deserialize;
+use strum::{EnumIter, IntoEnumIterator};
 
 pub type AppResult<T> = anyhow::Result<T>;
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq)]
 enum HighLevelListItem {
     Field(ConfigField),
     Section(ConfigSection),
@@ -22,9 +30,9 @@ enum HighLevelListItem {
 
 struct HighLevelConfigList(Vec<HighLevelListItem>);
 impl HighLevelConfigList {
-    fn new() -> Self {
+    fn new(config: &Config) -> Self {
         let inner = ConfigSection::iter()
-            .map(|section| (section, section.get_fields()))
+            .map(|section| (section, section.get_section(config)))
             .map(|(section, fields)| {
                 let mut list_section = vec![
                     HighLevelListItem::BlankLine,
@@ -33,7 +41,7 @@ impl HighLevelConfigList {
                 list_section.append(
                     &mut fields
                         .iter()
-                        .map(|field| HighLevelListItem::Field(*field))
+                        .map(|field| HighLevelListItem::Field(field.clone()))
                         .collect(),
                 );
                 list_section
@@ -52,10 +60,91 @@ impl HighLevelConfigList {
             _ => false,
         })
     }
+
+    fn next(&self, index: usize) -> Option<(usize, &ConfigField)> {
+        self.0
+            .iter()
+            .enumerate()
+            .filter_map(|(i, item)| match item {
+                HighLevelListItem::Field(field) => Some((i, field)),
+                _ => None,
+            })
+            .find(|(i, _item)| *i > index)
+    }
+
+    fn prev(&self, index: usize) -> Option<(usize, &ConfigField)> {
+        self.0
+            .iter()
+            .enumerate()
+            .rev()
+            .filter_map(|(i, item)| match item {
+                HighLevelListItem::Field(field) => Some((i, field)),
+                _ => None,
+            })
+            .find(|(i, _item)| *i < index)
+    }
+}
+
+fn set_theme_option(
+    config: &mut Config,
+    option_name: String,
+    old_value: &toml::Value,
+    new_value: String,
+) -> AppResult<()> {
+    // if the field type was last String, don't try parsing the new value into anything but that.
+    let new_value = match matches!(old_value, toml::Value::String(_)) {
+        true => toml::Value::String(new_value),
+        false => toml::Value::deserialize(toml::de::ValueDeserializer::new(&new_value))?,
+    };
+    config
+        .theme
+        .config
+        .entry(option_name)
+        .insert_entry(new_value);
+    Ok(())
+}
+
+fn set_primary_domain(config: &mut Config, new_value: String) {
+    if config.blog.domains.is_none() {
+        config.blog.domains = Some(crate::config::DomainConfig {
+            primary: None,
+            aliases: Vec::new(),
+            subdomain: None,
+            enforce_https: true,
+            github_pages_domain: None,
+        });
+    }
+    if let Some(domains) = &mut config.blog.domains {
+        domains.primary = match new_value.is_empty() {
+            true => None,
+            false => Some(new_value.clone()),
+        };
+        domains.github_pages_domain = match new_value.is_empty() {
+            true => None,
+            false => Some(new_value),
+        };
+    }
+}
+
+fn set_domain_enforce_https(config: &mut Config, new_value: String) -> AppResult<()> {
+    let enforce_https = new_value.parse()?;
+    if config.blog.domains.is_none() {
+        config.blog.domains = Some(crate::config::DomainConfig {
+            primary: None,
+            aliases: Vec::new(),
+            subdomain: None,
+            enforce_https,
+            github_pages_domain: None,
+        });
+    }
+    if let Some(domains) = &mut config.blog.domains {
+        domains.enforce_https = enforce_https;
+    }
+    Ok(())
 }
 
 /// Configuration field types
-#[derive(Debug, Clone, Copy, EnumIter, VariantArray, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ConfigField {
     BlogTitle,
     BlogAuthor,
@@ -64,6 +153,7 @@ pub enum ConfigField {
     BlogLanguage,
     BlogTimezone,
     ThemeName,
+    ThemeOption { name: String, value: toml::Value },
     DomainPrimary,
     DomainEnforceHttps,
     BuildOutputDir,
@@ -83,6 +173,7 @@ impl std::fmt::Display for ConfigField {
             Self::BlogLanguage => "Language",
             Self::BlogTimezone => "Timezone",
             Self::ThemeName => "Theme Name",
+            Self::ThemeOption { name, .. } => name,
             Self::DomainPrimary => "Primary Domain",
             Self::DomainEnforceHttps => "Enforce HTTPS",
             Self::BuildOutputDir => "Output Directory",
@@ -96,23 +187,6 @@ impl std::fmt::Display for ConfigField {
 }
 
 impl ConfigField {
-    pub fn category(&self) -> ConfigSection {
-        match self {
-            Self::BlogTitle
-            | Self::BlogAuthor
-            | Self::BlogDescription
-            | Self::BlogBaseUrl
-            | Self::BlogLanguage
-            | Self::BlogTimezone => ConfigSection::Blog,
-            Self::ThemeName => ConfigSection::Theme,
-            Self::DomainPrimary | ConfigField::DomainEnforceHttps => ConfigSection::Domain,
-            Self::BuildOutputDir | Self::BuildDrafts | Self::BuildFuturePosts => {
-                ConfigSection::Build
-            }
-            Self::DevPort | ConfigField::DevAutoReload => ConfigSection::Development,
-        }
-    }
-
     pub fn get_value(&self, config: &Config) -> String {
         match self {
             Self::BlogTitle => config.blog.title.clone(),
@@ -122,6 +196,11 @@ impl ConfigField {
             Self::BlogLanguage => config.blog.language.as_deref().unwrap_or("").to_string(),
             Self::BlogTimezone => config.blog.timezone.as_deref().unwrap_or("").to_string(),
             Self::ThemeName => config.theme.name.clone(),
+            // don't render toml strings with added quotes
+            Self::ThemeOption { value, .. } => match value {
+                toml::Value::String(val) => val.clone(),
+                _ => value.to_string(),
+            },
             Self::DomainPrimary => {
                 if let Some(domains) = &config.blog.domains {
                     domains.primary.as_deref().unwrap_or("").to_string()
@@ -149,6 +228,35 @@ impl ConfigField {
         }
     }
 
+    fn set(&self, config: &mut Config, new_value: String) -> AppResult<()> {
+        match self {
+            Self::BlogTitle => config.blog.author = new_value,
+            Self::BlogAuthor => config.blog.author = new_value,
+            Self::BlogDescription => config.blog.description = new_value,
+            Self::BlogBaseUrl => config.blog.base_url = new_value,
+            Self::BlogLanguage => {
+                config.blog.language = (!new_value.is_empty()).then_some(new_value)
+            }
+            Self::BlogTimezone => {
+                config.blog.timezone = (!new_value.is_empty()).then_some(new_value)
+            }
+            Self::ThemeName => config.theme.name = new_value,
+            Self::ThemeOption { name, value } => {
+                set_theme_option(config, name.clone(), value, new_value)?
+            }
+            Self::DomainPrimary => set_primary_domain(config, new_value),
+            Self::DomainEnforceHttps => set_domain_enforce_https(config, new_value)?,
+            Self::BuildOutputDir => {
+                config.build.output_dir = (!new_value.is_empty()).then_some(new_value)
+            }
+            Self::BuildDrafts => config.build.drafts = new_value.parse()?,
+            Self::BuildFuturePosts => config.build.future_posts = new_value.parse()?,
+            Self::DevPort => config.dev.port = new_value.parse()?,
+            Self::DevAutoReload => config.dev.auto_reload = new_value.parse()?,
+        }
+        Ok(())
+    }
+
     pub fn is_boolean(&self) -> bool {
         matches!(
             self,
@@ -156,12 +264,39 @@ impl ConfigField {
                 | Self::BuildDrafts
                 | Self::BuildFuturePosts
                 | Self::DevAutoReload
+                | Self::ThemeOption {
+                    value: toml::Value::Boolean(_),
+                    ..
+                }
         )
     }
 
     pub fn is_numeric(&self) -> bool {
-        matches!(self, Self::DevPort)
+        matches!(
+            self,
+            Self::DevPort
+                | Self::ThemeOption {
+                    value: toml::Value::Integer(_),
+                    ..
+                }
+        )
     }
+}
+
+fn get_theme_specific_config_fields(config: &Config) -> Vec<ConfigField> {
+    config
+        .theme
+        .config
+        .clone()
+        .into_iter()
+        .map(|(name, value)| ConfigField::ThemeOption { name, value })
+        .collect::<Vec<ConfigField>>()
+}
+
+fn get_all_theme_fields(config: &Config) -> Vec<ConfigField> {
+    let mut fields = vec![ConfigField::ThemeName];
+    fields.append(&mut get_theme_specific_config_fields(config));
+    fields
 }
 
 #[derive(Debug, Clone, Copy, EnumIter, PartialEq, Eq, Hash)]
@@ -187,10 +322,25 @@ impl std::fmt::Display for ConfigSection {
 }
 
 impl ConfigSection {
-    fn get_fields(&self) -> Vec<ConfigField> {
-        ConfigField::iter()
-            .filter(|field| field.category() == *self)
-            .collect()
+    fn get_section(&self, config: &Config) -> Vec<ConfigField> {
+        match self {
+            Self::Blog => vec![
+                ConfigField::BlogTitle,
+                ConfigField::BlogAuthor,
+                ConfigField::BlogDescription,
+                ConfigField::BlogBaseUrl,
+                ConfigField::BlogLanguage,
+                ConfigField::BlogTimezone,
+            ],
+            Self::Theme => get_all_theme_fields(config),
+            Self::Domain => vec![ConfigField::DomainPrimary, ConfigField::DomainEnforceHttps],
+            Self::Build => vec![
+                ConfigField::BuildOutputDir,
+                ConfigField::BuildDrafts,
+                ConfigField::BuildFuturePosts,
+            ],
+            Self::Development => vec![ConfigField::DevPort, ConfigField::DevAutoReload],
+        }
     }
 }
 
@@ -214,7 +364,7 @@ impl ConfigApp {
                 Constraint::Min(0),    // Main content
                 Constraint::Length(3), // Status bar
             ])
-            .split(frame.size());
+            .split(frame.area());
 
         self.state.render_header(frame, chunks[0], &self.theme);
         self.state
@@ -240,6 +390,7 @@ impl ConfigApp {
 enum ConfigAppState {
     Browse(Box<Browse>),
     Edit(Box<Edit>),
+    EditTheme(Box<EditTheme>),
     Help(Box<Help>),
     Shutdown(Shutdown),
 }
@@ -253,6 +404,7 @@ impl ConfigAppState {
         match self {
             Self::Browse(app) => app.render_browse_mode(frame, area, theme),
             Self::Edit(app) => app.render_edit_mode(frame, area, theme),
+            Self::EditTheme(app) => app.render_table(frame, area, theme),
             Self::Help(app) => app.render_help_overlay(frame, theme), // Help is rendered as overlay
             Self::Shutdown(_) => {}
         }
@@ -290,6 +442,7 @@ impl ConfigAppState {
         match self {
             Self::Browse(app) => Ok(app.handle_key_event(key)),
             Self::Edit(app) => app.handle_key_event(key),
+            Self::EditTheme(app) => app.handle_key_event(key),
             Self::Help(app) => Ok(app.handle_key_event(key)),
             Self::Shutdown(app) => Ok(app.into()),
         }
@@ -299,6 +452,7 @@ impl ConfigAppState {
         match self {
             Self::Browse(app) => app.status_message.clone(),
             Self::Edit(app) => app.browse_data.status_message.clone(),
+            Self::EditTheme(app) => app.browse_data.status_message.clone(),
             Self::Help(app) => app.browse_data.status_message.clone(),
             Self::Shutdown(_) => "Shutting down".to_string(),
         }
@@ -314,6 +468,12 @@ impl From<Browse> for ConfigAppState {
 impl From<Edit> for ConfigAppState {
     fn from(value: Edit) -> Self {
         ConfigAppState::Edit(Box::new(value))
+    }
+}
+
+impl From<EditTheme> for ConfigAppState {
+    fn from(value: EditTheme) -> Self {
+        ConfigAppState::EditTheme(Box::new(value))
     }
 }
 
@@ -347,14 +507,15 @@ struct Browse {
 impl Browse {
     fn new(config: Config, project: Project) -> Self {
         let mut list_state = ListState::default();
-        let list_layout = HighLevelConfigList::new();
+        let list_layout = HighLevelConfigList::new(&config);
         let selected_field = ConfigField::BlogTitle;
-        list_state.select(list_layout.index_of(&selected_field));
+        let config_index = list_layout.index_of(&selected_field).unwrap_or(2);
+        list_state.select(Some(config_index));
         Self {
             config,
             project,
             selected_field,
-            config_index: 0, // must match the index of selected_field in ConfigField::VARIANTS
+            config_index,
             list_layout,
             list_state,
             status_message: "Navigate with ↑/↓, Enter to edit, 'q' to quit".to_string(),
@@ -367,7 +528,10 @@ impl Browse {
             KeyCode::Char('h') | KeyCode::F(1) => self.enter_help_mode().into(),
             KeyCode::Up => self.key_up().into(),
             KeyCode::Down => self.key_down().into(),
-            KeyCode::Enter => self.enter_edit_mode().into(),
+            KeyCode::Enter => match self.selected_field {
+                ConfigField::ThemeName => self.enter_edit_theme_mode().into(),
+                _ => self.enter_edit_mode().into(),
+            },
             _ => self.into(),
         }
     }
@@ -376,22 +540,23 @@ impl Browse {
         if self.config_index == 0 {
             return self;
         }
-        let prev = ConfigField::VARIANTS.get(self.config_index - 1);
-        if let Some(prev) = prev {
-            self.selected_field = *prev;
-            self.config_index -= 1;
-            self.list_state.select(self.list_layout.index_of(prev));
+        let prev: Option<(usize, &ConfigField)> = self.list_layout.prev(self.config_index);
+        if let Some((index, prev)) = prev {
+            self.selected_field = prev.clone();
+            self.config_index = index;
+            self.list_state.select(Some(index));
         }
         self
     }
 
     fn key_down(mut self) -> Self {
-        let next = ConfigField::VARIANTS.get(self.config_index + 1);
-        if let Some(next) = next {
-            self.selected_field = *next;
-            self.config_index += 1;
-            self.list_state.select(self.list_layout.index_of(next));
+        let next = self.list_layout.next(self.config_index);
+        if let Some((index, next)) = next {
+            self.selected_field = next.clone();
+            self.config_index = index;
+            self.list_state.select(Some(index));
         }
+
         self
     }
 
@@ -449,6 +614,7 @@ impl Browse {
             .highlight_style(
                 Style::default()
                     .bg(theme.primary_color)
+                    .fg(theme.background_color)
                     .add_modifier(Modifier::BOLD),
             );
 
@@ -464,11 +630,8 @@ impl Browse {
         };
 
         let content = format!(
-            "Field: {}\nCategory: {}\nCurrent Value: {}{}\n\nPress Enter to edit this field",
-            self.selected_field,
-            self.selected_field.category(),
-            value,
-            effective_url
+            "Field: {}\nCurrent Value: {}{}\n\nPress Enter to edit this field",
+            self.selected_field, value, effective_url
         );
 
         let details = Paragraph::new(content)
@@ -492,9 +655,14 @@ impl Browse {
         );
         Edit {
             new_config: self.config.clone(),
+            target_field: self.selected_field.clone(),
             browse_data: self,
             edit_buffer,
         }
+    }
+
+    fn enter_edit_theme_mode(self) -> EditTheme {
+        self.into()
     }
 
     fn enter_help_mode(self) -> Help {
@@ -508,6 +676,7 @@ impl Browse {
 
 struct Edit {
     browse_data: Browse,
+    target_field: ConfigField,
     edit_buffer: String,
     new_config: Config,
 }
@@ -526,10 +695,7 @@ impl Edit {
                 browse_data.status_message = "Edit cancelled".to_string();
                 Ok(browse_data.into())
             }
-            KeyCode::Enter => {
-                let browse_data = self.apply_edit()?;
-                Ok(browse_data.into())
-            }
+            KeyCode::Enter => self.apply(),
             KeyCode::Backspace => {
                 self.edit_buffer.pop();
                 Ok(self.into())
@@ -591,103 +757,20 @@ impl Edit {
         frame.render_widget(help, edit_area[1]);
     }
 
-    fn apply_edit(mut self) -> AppResult<Browse> {
-        let value = self.edit_buffer.trim().to_string();
-
-        // Apply the change to the configuration
-        match self.browse_data.selected_field {
-            ConfigField::BlogTitle => {
-                if !value.is_empty() {
-                    self.new_config.blog.title = value;
-                }
-            }
-            ConfigField::BlogAuthor => {
-                if !value.is_empty() {
-                    self.new_config.blog.author = value;
-                }
-            }
-            ConfigField::BlogDescription => {
-                if !value.is_empty() {
-                    self.new_config.blog.description = value;
-                }
-            }
-            ConfigField::BlogBaseUrl => {
-                if !value.is_empty() {
-                    self.new_config.blog.base_url = value;
-                }
-            }
-            ConfigField::BlogLanguage => {
-                self.new_config.blog.language = if value.is_empty() { None } else { Some(value) };
-            }
-            ConfigField::BlogTimezone => {
-                self.new_config.blog.timezone = if value.is_empty() { None } else { Some(value) };
-            }
-            ConfigField::ThemeName => {
-                if !value.is_empty() {
-                    self.new_config.theme.name = value;
-                }
-            }
-            ConfigField::DomainPrimary => {
-                if self.new_config.blog.domains.is_none() {
-                    self.new_config.blog.domains = Some(crate::config::DomainConfig {
-                        primary: None,
-                        aliases: Vec::new(),
-                        subdomain: None,
-                        enforce_https: true,
-                        github_pages_domain: None,
-                    });
-                }
-                if let Some(domains) = &mut self.new_config.blog.domains {
-                    domains.primary = if value.is_empty() {
-                        None
-                    } else {
-                        Some(value.clone())
-                    };
-                    domains.github_pages_domain = if value.is_empty() { None } else { Some(value) };
-                }
-            }
-            ConfigField::DomainEnforceHttps => {
-                let enforce_https = value.to_lowercase() == "true";
-                if self.new_config.blog.domains.is_none() {
-                    self.new_config.blog.domains = Some(crate::config::DomainConfig {
-                        primary: None,
-                        aliases: Vec::new(),
-                        subdomain: None,
-                        enforce_https,
-                        github_pages_domain: None,
-                    });
-                }
-                if let Some(domains) = &mut self.new_config.blog.domains {
-                    domains.enforce_https = enforce_https;
-                }
-            }
-            ConfigField::BuildOutputDir => {
-                self.new_config.build.output_dir =
-                    if value.is_empty() { None } else { Some(value) };
-            }
-            ConfigField::BuildDrafts => {
-                self.new_config.build.drafts = value.to_lowercase() == "true";
-            }
-            ConfigField::BuildFuturePosts => {
-                self.new_config.build.future_posts = value.to_lowercase() == "true";
-            }
-            ConfigField::DevPort => {
-                if let Ok(port) = value.parse::<u16>() {
-                    if port > 0 {
-                        self.new_config.dev.port = port;
-                    }
-                }
-            }
-            ConfigField::DevAutoReload => {
-                self.new_config.dev.auto_reload = value.to_lowercase() == "true";
-            }
+    fn apply(mut self) -> AppResult<ConfigAppState> {
+        let new_value = self.edit_buffer.trim().to_string();
+        if new_value.is_empty() {
+            self.browse_data.status_message = "Edit discarded".to_string();
+            return Ok(self.browse_data.into());
         }
 
-        let config_path = self.browse_data.project.root.join("blogr.toml");
-        self.new_config.save_to_file(&config_path)?;
-        self.browse_data.config = self.new_config.clone();
-        self.browse_data.status_message = "Configuration saved successfully!".to_string();
-        Ok(self.enter_browse_mode())
+        if let Err(e) = self.target_field.set(&mut self.new_config, new_value) {
+            self.browse_data.status_message = e.to_string();
+            return Ok(self.into());
+        };
+
+        self.browse_data = save_and_refresh(self.browse_data, self.new_config.clone())?;
+        Ok(self.enter_browse_mode().into())
     }
 
     fn enter_browse_mode(self) -> Browse {
@@ -704,7 +787,7 @@ impl Help {
     }
 
     fn render_help_overlay(&self, frame: &mut Frame, theme: &TuiTheme) {
-        let area = frame.size();
+        let area = frame.area();
         let popup_area = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -762,4 +845,165 @@ impl Help {
     fn enter_browse_mode(self) -> Browse {
         self.browse_data
     }
+}
+
+struct EditTheme {
+    browse_data: Browse,
+    options: Vec<ThemeInfo>,
+    table_state: TableState,
+    row_index: usize,
+    new_config: Config,
+    current_theme_index: Option<usize>,
+}
+
+impl From<Browse> for EditTheme {
+    fn from(value: Browse) -> Self {
+        let options = get_all_themes()
+            .iter()
+            .map(|theme| theme.info())
+            .collect::<Vec<ThemeInfo>>();
+
+        let current_theme_index = options
+            .iter()
+            .position(|theme| theme.name == value.config.theme.name);
+
+        let row_index = current_theme_index.unwrap_or(0);
+        let mut table_state = TableState::default();
+        table_state.select(Some(row_index));
+
+        let new_config = value.config.clone();
+        Self {
+            browse_data: value,
+            new_config,
+            options,
+            row_index,
+            table_state,
+            current_theme_index,
+        }
+    }
+}
+
+impl EditTheme {
+    fn render_table(&mut self, frame: &mut Frame, area: Rect, theme: &TuiTheme) {
+        let header_style = Style::default()
+            .fg(theme.primary_color)
+            .add_modifier(Modifier::BOLD);
+        let selected_row_style = Style::default()
+            .add_modifier(Modifier::REVERSED)
+            .fg(theme.focused_border_color);
+        let selected_col_style = Style::default().fg(theme.cursor_color);
+        let selected_cell_style = Style::default()
+            .add_modifier(Modifier::REVERSED)
+            .fg(theme.background_color);
+
+        let header = ["Name", "Version", "Author", "Description"]
+            .into_iter()
+            .map(Cell::from)
+            .collect::<Row>()
+            .style(header_style)
+            .height(1);
+        let rows = self.options.iter().enumerate().map(|(i, data)| {
+            let item = data.as_data_row();
+            let style = match self.current_theme_index {
+                Some(j) if j == i => Style::new()
+                    .fg(theme.text_color)
+                    .bg(theme.background_color)
+                    .italic(),
+                _ => Style::new().fg(theme.text_color),
+            };
+            item.into_iter()
+                .map(|content| Cell::from(Text::from(format!("\n{content}\n"))))
+                .collect::<Row>()
+                .style(style)
+                .height(4)
+        });
+
+        let bar = " █ ";
+        let t = Table::new(
+            rows,
+            [
+                // + 1 is for padding.
+                Constraint::Length(20 + 1),
+                Constraint::Length(10),
+                Constraint::Length(20),
+                Constraint::Min(40),
+            ],
+        )
+        .block(
+            Block::new()
+                .borders(Borders::ALL)
+                .title("Themes")
+                .border_style(theme.focused_border_style()),
+        )
+        .header(header)
+        .row_highlight_style(selected_row_style)
+        .column_highlight_style(selected_col_style)
+        .cell_highlight_style(selected_cell_style)
+        .highlight_symbol(Text::from(vec![
+            "".into(),
+            bar.into(),
+            bar.into(),
+            "".into(),
+        ]))
+        .highlight_spacing(HighlightSpacing::Always);
+        frame.render_stateful_widget(t, area, &mut self.table_state);
+    }
+
+    fn handle_key_event(self, key: KeyEvent) -> AppResult<ConfigAppState> {
+        match key.code {
+            KeyCode::Esc => Ok(self.enter_browse_mode().into()),
+            KeyCode::Up => Ok(self.key_up().into()),
+            KeyCode::Down => Ok(self.key_down().into()),
+            KeyCode::Enter => Ok(self.set_theme()?.into()),
+            _ => Ok(self.into()),
+        }
+    }
+
+    fn key_up(mut self) -> Self {
+        if self.row_index == 0 {
+            return self;
+        }
+        self.row_index -= 1;
+        self.table_state.select(Some(self.row_index));
+        self
+    }
+
+    fn key_down(mut self) -> Self {
+        if self.row_index >= self.options.len() - 1 {
+            return self;
+        }
+        self.row_index += 1;
+        self.table_state.select(Some(self.row_index));
+        self
+    }
+
+    fn set_theme(mut self) -> AppResult<Browse> {
+        let theme = self
+            .options
+            .get(self.row_index)
+            .expect("Index out of bounds")
+            .clone();
+        let default_theme_config = theme
+            .config_schema
+            .into_iter()
+            .map(|(field_name, config)| (field_name, config.value))
+            .collect::<HashMap<String, toml::Value>>();
+        self.new_config.set_theme(theme.name, default_theme_config);
+        //save
+        self.browse_data = save_and_refresh(self.browse_data, self.new_config.clone())?;
+        Ok(self.enter_browse_mode())
+    }
+
+    fn enter_browse_mode(self) -> Browse {
+        self.browse_data
+    }
+}
+
+fn save_and_refresh(mut browse_data: Browse, new_config: Config) -> AppResult<Browse> {
+    let config_path = browse_data.project.root.join("blogr.toml");
+    browse_data.config = new_config;
+    browse_data.config.save_to_file(&config_path)?;
+    browse_data.list_layout = HighLevelConfigList::new(&browse_data.config);
+    browse_data.status_message = "Configuration saved successfully!".to_string();
+    Ok(browse_data)
 }

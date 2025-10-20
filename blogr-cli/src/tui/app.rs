@@ -228,7 +228,7 @@ impl App {
                 Constraint::Min(0),    // Main content
                 Constraint::Length(3), // Status bar
             ])
-            .split(frame.size());
+            .split(frame.area());
 
         // Render header
         self.render_header(frame, main_chunks[0]);
@@ -332,7 +332,7 @@ impl App {
     }
 
     fn render_help_overlay(&self, frame: &mut Frame) {
-        let area = frame.size();
+        let area = frame.area();
 
         // Create a centered rectangle
         let popup_area = Layout::default()

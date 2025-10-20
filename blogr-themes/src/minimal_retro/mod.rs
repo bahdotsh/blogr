@@ -18,8 +18,7 @@ impl Theme for MinimalRetroTheme {
         config_schema.insert(
             "primary_color".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: "#FF6B35".to_string(),
+                value: toml::Value::String("#FF6B35".to_string()),
                 description: "Primary accent color (retro orange)".to_string(),
             },
         );
@@ -27,8 +26,7 @@ impl Theme for MinimalRetroTheme {
         config_schema.insert(
             "secondary_color".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: "#F7931E".to_string(),
+                value: toml::Value::String("#F7931E".to_string()),
                 description: "Secondary accent color (warm amber)".to_string(),
             },
         );
@@ -36,8 +34,7 @@ impl Theme for MinimalRetroTheme {
         config_schema.insert(
             "background_color".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: "#2D1B0F".to_string(),
+                value: toml::Value::String("#2D1B0F".to_string()),
                 description: "Background color (dark brown)".to_string(),
             },
         );
@@ -45,8 +42,9 @@ impl Theme for MinimalRetroTheme {
         config_schema.insert(
             "font_family".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: "'Crimson Text', 'Playfair Display', Georgia, serif".to_string(),
+                value: toml::Value::String(
+                    "'Crimson Text', 'Playfair Display', Georgia, serif".to_string(),
+                ),
                 description: "Artistic serif font family".to_string(),
             },
         );
@@ -54,8 +52,7 @@ impl Theme for MinimalRetroTheme {
         config_schema.insert(
             "accent_font".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: "'Space Mono', 'Courier Prime', monospace".to_string(),
+                value: toml::Value::String("'Space Mono', 'Courier Prime', monospace".to_string()),
                 description: "Monospace accent font for tags and metadata".to_string(),
             },
         );
@@ -63,8 +60,7 @@ impl Theme for MinimalRetroTheme {
         config_schema.insert(
             "show_reading_time".to_string(),
             ConfigOption {
-                option_type: "boolean".to_string(),
-                default: "true".to_string(),
+                value: toml::Value::Boolean(true),
                 description: "Display estimated reading time".to_string(),
             },
         );
@@ -72,8 +68,7 @@ impl Theme for MinimalRetroTheme {
         config_schema.insert(
             "show_author".to_string(),
             ConfigOption {
-                option_type: "boolean".to_string(),
-                default: "true".to_string(),
+                value: toml::Value::Boolean(true),
                 description: "Display post author".to_string(),
             },
         );
@@ -81,8 +76,7 @@ impl Theme for MinimalRetroTheme {
         config_schema.insert(
             "expandable_posts".to_string(),
             ConfigOption {
-                option_type: "boolean".to_string(),
-                default: "true".to_string(),
+                value: toml::Value::Boolean(true),
                 description: "Enable expandable post previews on homepage".to_string(),
             },
         );
