@@ -17,8 +17,7 @@ impl Theme for BrutjaTheme {
         schema.insert(
             "css".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: "static/styles.css".to_string(),
+                value: toml::Value::String("static/styles.css".to_string()),
                 description: "Path to user CSS (served from /static/)".to_string(),
             },
         );
@@ -26,8 +25,7 @@ impl Theme for BrutjaTheme {
         schema.insert(
             "hero_title".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: "Welcome".to_string(),
+                value: toml::Value::String("Welcome".to_string()),
                 description: "Homepage hero title".to_string(),
             },
         );
@@ -35,8 +33,7 @@ impl Theme for BrutjaTheme {
         schema.insert(
             "hero_subtitle".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: "Customize your theme".to_string(),
+                value: toml::Value::String("Customize your theme".to_string()),
                 description: "Homepage hero subtitle".to_string(),
             },
         );
@@ -44,8 +41,7 @@ impl Theme for BrutjaTheme {
         schema.insert(
             "github_username".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: String::new(),
+                value: toml::Value::String(String::new()),
                 description: "Your github username".to_string(),
             },
         );
@@ -53,8 +49,7 @@ impl Theme for BrutjaTheme {
         schema.insert(
             "linkedin_username".to_string(),
             ConfigOption {
-                option_type: "string".to_string(),
-                default: String::new(),
+                value: toml::Value::String(String::new()),
                 description:
                     "The last segment of your linkedin profile URL. Do not include slashes."
                         .to_string(),

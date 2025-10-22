@@ -28,10 +28,15 @@ pub struct ThemeInfo {
     pub config_schema: HashMap<String, ConfigOption>,
 }
 
+impl ThemeInfo {
+    pub fn as_data_row(&self) -> [&String; 4] {
+        [&self.name, &self.version, &self.author, &self.description]
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigOption {
-    pub option_type: String,
-    pub default: String,
+    pub value: toml::Value,
     pub description: String,
 }
 
@@ -70,52 +75,69 @@ impl IntoIterator for ThemeTemplates {
 }
 
 #[must_use]
-pub fn get_all_themes() -> HashMap<String, Box<dyn Theme>> {
-    let mut themes: HashMap<String, Box<dyn Theme>> = HashMap::new();
-
-    let minimal_retro = MinimalRetroTheme::new();
-    themes.insert("minimal-retro".to_string(), Box::new(minimal_retro));
-
-    let obsidian = ObsidianTheme::new();
-    themes.insert("obsidian".to_string(), Box::new(obsidian));
-
-    let terminal_candy = TerminalCandyTheme::new();
-    themes.insert("terminal-candy".to_string(), Box::new(terminal_candy));
-
-    let dark_minimal = DarkMinimalTheme::new();
-    themes.insert("dark-minimal".to_string(), Box::new(dark_minimal));
-
-    let musashi = MusashiTheme::new();
-    themes.insert("musashi".to_string(), Box::new(musashi));
-
-    let slate_portfolio = SlatePortfolioTheme::new();
-    themes.insert("slate-portfolio".to_string(), Box::new(slate_portfolio));
-
-    let typewriter = TypewriterTheme::new();
-    themes.insert("typewriter".to_string(), Box::new(typewriter));
-
-    let brutja = BrutjaTheme::new();
-    themes.insert("brutja".to_string(), Box::new(brutja));
-
-    themes
+pub fn get_all_themes() -> Vec<Box<dyn Theme>> {
+    vec![
+        Box::new(MinimalRetroTheme::new()),
+        Box::new(ObsidianTheme::new()),
+        Box::new(TerminalCandyTheme::new()),
+        Box::new(DarkMinimalTheme::new()),
+        Box::new(MusashiTheme::new()),
+        Box::new(SlatePortfolioTheme::new()),
+        Box::new(TypewriterTheme::new()),
+        Box::new(BrutjaTheme::new()),
+    ]
 }
 
 #[must_use]
 pub fn get_theme(name: &str) -> Option<Box<dyn Theme>> {
-    match name {
-        "minimal-retro" => Some(Box::new(MinimalRetroTheme::new()) as Box<dyn Theme>),
-        "obsidian" => Some(Box::new(ObsidianTheme::new()) as Box<dyn Theme>),
-        "terminal-candy" => Some(Box::new(TerminalCandyTheme::new()) as Box<dyn Theme>),
-        "dark-minimal" => Some(Box::new(DarkMinimalTheme::new()) as Box<dyn Theme>),
-        "musashi" => Some(Box::new(MusashiTheme::new()) as Box<dyn Theme>),
-        "slate-portfolio" => Some(Box::new(SlatePortfolioTheme::new()) as Box<dyn Theme>),
-        "typewriter" => Some(Box::new(TypewriterTheme::new()) as Box<dyn Theme>),
-        "brutja" => Some(Box::new(BrutjaTheme::new()) as Box<dyn Theme>),
-        _ => None,
-    }
+    get_all_themes()
+        .into_iter()
+        .find(|theme| theme.info().name.to_lowercase() == name.to_lowercase())
 }
 
 #[must_use]
 pub fn get_theme_by_name(name: &str) -> Option<Box<dyn Theme>> {
     get_theme(name)
+}
+
+#[cfg(test)]
+mod test {
+    use std::collections::{HashMap, HashSet};
+
+    use crate::get_all_themes;
+
+    #[test]
+    fn themes_have_unique_names() {
+        let all_theme_names = get_all_themes()
+            .iter()
+            .map(|theme| theme.info().name)
+            .collect::<Vec<String>>();
+
+        let unique_theme_names = all_theme_names
+            .clone()
+            .into_iter()
+            .collect::<HashSet<String>>();
+
+        // we could assert and end the test here but really we want to know which name has been duplicated.
+        if unique_theme_names.len() == all_theme_names.len() {
+            return;
+        }
+
+        let duplicate_theme_name = all_theme_names
+            .iter()
+            .fold(HashMap::new(), |mut acc: HashMap<String, u32>, name| {
+                acc.entry(name.clone())
+                    .and_modify(|entry| *entry += 1)
+                    .or_insert(1);
+                acc
+            })
+            .into_iter()
+            .find(|(_name, count)| *count > 1);
+
+        if let Some((duplicate, count)) = duplicate_theme_name {
+            panic!("Theme name {duplicate} occurs {count} times.");
+        } else {
+            panic!("Test working incorrectly. Unreachable statement reached.");
+        }
+    }
 }

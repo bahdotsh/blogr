@@ -25,15 +25,15 @@ pub async fn handle_list() -> Result<()> {
     if all_themes.is_empty() {
         println!("  📦 No themes available");
     } else {
-        for (name, theme) in all_themes {
+        for theme in all_themes {
             let info = theme.info();
-            let is_active = current_theme.as_ref() == Some(&name);
+            let is_active = current_theme.as_ref() == Some(&info.name);
             let status_icon = if is_active { "✅" } else { "📦" };
             let status_text = if is_active { " (active)" } else { "" };
 
             println!(
                 "  {} {}{} - {}",
-                status_icon, name, status_text, info.description
+                status_icon, info.name, status_text, info.description
             );
             println!(
                 "      👤 Author: {} | 📦 Version: {}",
@@ -66,7 +66,7 @@ pub async fn handle_info(name: String) -> Result<()> {
             for (option_name, config_option) in info.config_schema {
                 println!(
                     "  - {}: {} ({})",
-                    option_name, config_option.default, config_option.description
+                    option_name, config_option.value, config_option.description
                 );
             }
         } else {
@@ -119,20 +119,7 @@ pub async fn handle_set(name: String) -> Result<()> {
     for (option_name, config_option) in theme_info.config_schema.clone() {
         // Only set default if the option doesn't exist in current config
         if let Entry::Vacant(e) = config.theme.config.entry(option_name) {
-            let default_value = match config_option.option_type.as_str() {
-                "boolean" => toml::Value::Boolean(config_option.default.parse().unwrap_or(false)),
-                "number" => {
-                    if let Ok(int_val) = config_option.default.parse::<i64>() {
-                        toml::Value::Integer(int_val)
-                    } else if let Ok(float_val) = config_option.default.parse::<f64>() {
-                        toml::Value::Float(float_val)
-                    } else {
-                        toml::Value::String(config_option.default)
-                    }
-                }
-                _ => toml::Value::String(config_option.default),
-            };
-            e.insert(default_value);
+            e.insert(config_option.value);
         }
     }
 
@@ -183,9 +170,11 @@ pub async fn handle_preview(name: String) -> Result<()> {
         for (option_name, config_option) in &theme_info.config_schema {
             println!(
                 "  • {} ({}): {}",
-                option_name, config_option.option_type, config_option.description
+                option_name,
+                config_option.value.type_str(),
+                config_option.description
             );
-            println!("    Default: {}", config_option.default);
+            println!("    Default: {}", config_option.value);
         }
     } else {
         println!("⚙️ No configuration options available");
@@ -209,7 +198,7 @@ pub async fn handle_preview(name: String) -> Result<()> {
             println!(
                 "  • {}: {}",
                 option_name.replace('_', " "),
-                config_option.default
+                config_option.value
             );
         }
     }
