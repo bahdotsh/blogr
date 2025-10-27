@@ -15,7 +15,7 @@ path = "src/main.rs"
 blogr-themes = { version = "0.4.1", path = "../blogr-themes" }
 clap = { version = "4.5", features = ["derive"] }
 ratatui = "0.24"
-crossterm = "0.27"
+crossterm = "0.29"
 pulldown-cmark = "0.9"
 syntect = "5.3"
 tera = "1.19"
