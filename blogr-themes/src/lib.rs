@@ -20,8 +20,10 @@ pub use slate_portfolio::SlatePortfolioTheme;
 pub use terminal_candy::TerminalCandyTheme;
 pub use typewriter::TypewriterTheme;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
 pub enum SiteType {
+    #[default]
     Blog,
     Personal,
 }
@@ -47,8 +49,14 @@ pub struct ThemeInfo {
 }
 
 impl ThemeInfo {
-    pub fn as_data_row(&self) -> [&String; 4] {
-        [&self.name, &self.version, &self.author, &self.description]
+    pub fn as_data_row(&self) -> [String; 5] {
+        [
+            self.name.clone(),
+            self.version.clone(),
+            self.site_type.to_string(),
+            self.author.clone(),
+            self.description.clone(),
+        ]
     }
 }
 
@@ -120,6 +128,8 @@ pub fn get_theme_by_name(name: &str) -> Option<Box<dyn Theme>> {
 
 #[cfg(test)]
 mod test {
+    use crate::SiteType;
+    use crate::ThemeTemplates;
     use std::collections::{HashMap, HashSet};
 
     use crate::get_all_themes;
@@ -157,5 +167,52 @@ mod test {
         } else {
             panic!("Test working incorrectly. Unreachable statement reached.");
         }
+    }
+
+    impl SiteType {
+        fn required_templates(&self) -> Vec<&'static str> {
+            match self {
+                Self::Blog => vec![
+                    "archive.html",
+                    "base.html",
+                    "index.html",
+                    "post.html",
+                    "tag.html",
+                    "tags.html",
+                ],
+                Self::Personal => vec!["base.html", "index.html"],
+            }
+        }
+    }
+
+    fn templates_satisfy_site_type(templates: &ThemeTemplates, site_type: &SiteType) -> bool {
+        let mut expected = site_type.required_templates();
+        let actual = templates
+            .templates
+            .iter()
+            .map(|pair| pair.0)
+            .collect::<Vec<&'static str>>();
+
+        for template in actual {
+            let found = expected.iter().position(|item| *item == template);
+            if let Some(expected_template) = found {
+                expected.swap_remove(expected_template);
+            }
+        }
+
+        expected.is_empty()
+    }
+
+    #[test]
+    fn themes_have_appropriate_templates() {
+        get_all_themes().iter().for_each(|theme| {
+            let info = theme.info();
+            if !templates_satisfy_site_type(&theme.templates(), &info.site_type) {
+                panic!(
+                    "{} does not satisfy the minimum template requirements for {}",
+                    info.name, info.site_type
+                )
+            }
+        });
     }
 }

@@ -896,7 +896,7 @@ impl EditTheme {
             .add_modifier(Modifier::REVERSED)
             .fg(theme.background_color);
 
-        let header = ["Name", "Version", "Author", "Description"]
+        let header = ["Name", "Version", "Type", "Author", "Description"]
             .into_iter()
             .map(Cell::from)
             .collect::<Row>()
@@ -922,8 +922,8 @@ impl EditTheme {
         let t = Table::new(
             rows,
             [
-                // + 1 is for padding.
-                Constraint::Length(20 + 1),
+                Constraint::Length(20),
+                Constraint::Length(10),
                 Constraint::Length(10),
                 Constraint::Length(20),
                 Constraint::Min(40),

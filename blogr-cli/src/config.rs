@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use blogr_themes::SiteType;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -33,23 +34,11 @@ pub struct Config {
     pub site: SiteConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SiteConfig {
     /// Type of site: "blog" or "personal"
-    #[serde(default = "default_site_type")]
-    pub site_type: String,
-}
-
-fn default_site_type() -> String {
-    "blog".to_string()
-}
-
-impl Default for SiteConfig {
-    fn default() -> Self {
-        Self {
-            site_type: default_site_type(),
-        }
-    }
+    #[serde(default)]
+    pub site_type: SiteType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -372,7 +361,7 @@ impl Config {
     ) -> Self {
         let mut config =
             Self::new_with_defaults(title, author, description, github_username, github_repo);
-        config.site.site_type = "personal".to_string();
+        config.site.site_type = SiteType::Personal;
         config.theme.name = "dark-minimal".to_string();
         config
     }

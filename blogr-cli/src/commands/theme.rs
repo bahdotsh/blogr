@@ -139,18 +139,8 @@ pub async fn handle_set(name: String) -> Result<()> {
 
     // Validate theme compatibility with site type
     let theme_info = theme.info();
-    let config_site_type = match config.site.site_type.as_str() {
-        "blog" => SiteType::Blog,
-        "personal" => SiteType::Personal,
-        other => {
-            return Err(anyhow!(
-                "❌ Unknown site type '{}' in configuration. Expected 'blog' or 'personal'.",
-                other
-            ))
-        }
-    };
 
-    if theme_info.site_type != config_site_type {
+    if theme_info.site_type != config.site.site_type {
         // Dynamically build theme lists by site type
         let mut blog_theme_names = Vec::new();
         let mut personal_theme_names = Vec::new();
@@ -176,12 +166,12 @@ pub async fn handle_set(name: String) -> Result<()> {
             2. Change your site type in blogr.toml: [site] site_type = \"{}\"",
             name,
             theme_info.site_type,
-            config_site_type,
+            config.site.site_type,
             "Blog",
             blog_themes,
             "Personal",
             personal_themes,
-            config_site_type,
+            config.site.site_type,
             theme_info.site_type
         ));
     }

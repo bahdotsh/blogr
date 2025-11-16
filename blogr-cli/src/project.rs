@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use blogr_themes::SiteType;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -324,7 +325,7 @@ Feel free to reach out if you'd like to collaborate or just say hello!
         let mut issues = Vec::new();
 
         // Check required directories based on site type
-        let is_personal = self.config.site.site_type == "personal";
+        let is_personal = self.config.site.site_type == SiteType::Personal;
 
         if !is_personal {
             // For blogs, require posts directory
