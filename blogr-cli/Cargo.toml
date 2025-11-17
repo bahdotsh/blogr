@@ -16,7 +16,7 @@ blogr-themes = { version = "0.4.1", path = "../blogr-themes" }
 clap = { version = "4.5", features = ["derive"] }
 ratatui = "0.29"
 crossterm = "0.29"
-pulldown-cmark = "0.9"
+pulldown-cmark = "0.13"
 syntect = "5.3"
 tera = "1.20"
 serde = { workspace = true }
