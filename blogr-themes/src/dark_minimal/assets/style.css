@@ -26,6 +26,10 @@ body {
     overflow-x: hidden;
 }
 
+pre {
+    white-space: pre-wrap;
+}
+
 body::before {
     content: '';
     position: fixed;

@@ -2,6 +2,10 @@
 
 /* Additional Obsidian-specific styles not covered in base.html */
 
+pre {
+    white-space: pre-wrap;
+}
+
 /* Frontmatter styling */
 .frontmatter-container {
     margin: 16px 0;
