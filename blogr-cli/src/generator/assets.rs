@@ -57,26 +57,3 @@ pub fn optimize_js(js: &str) -> String {
         .join(" ")
         .replace("  ", " ")
 }
-
-/// Get MIME type from file extension
-pub fn get_mime_type(path: &Path) -> &'static str {
-    match path.extension().and_then(|ext| ext.to_str()) {
-        Some("html") => "text/html",
-        Some("css") => "text/css",
-        Some("js") => "application/javascript",
-        Some("json") => "application/json",
-        Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("svg") => "image/svg+xml",
-        Some("ico") => "image/x-icon",
-        Some("woff") => "font/woff",
-        Some("woff2") => "font/woff2",
-        Some("ttf") => "font/ttf",
-        Some("eot") => "application/vnd.ms-fontobject",
-        Some("pdf") => "application/pdf",
-        Some("txt") => "text/plain",
-        Some("md") => "text/markdown",
-        _ => "application/octet-stream",
-    }
-}

@@ -3,6 +3,7 @@ use crate::generator::SiteBuilder;
 use crate::project::Project;
 use crate::utils::Console;
 use anyhow::{anyhow, Context, Result};
+use blogr_themes::SiteType;
 use git2::{BranchType, Repository, Signature};
 use std::fs;
 use std::path::Path;
@@ -37,7 +38,7 @@ pub async fn handle_deploy(branch: String, message: Option<String>) -> Result<()
         .ok_or_else(|| anyhow!("GitHub configuration not found. Initialize with GitHub integration or configure manually."))?;
 
     // For personal mode, read content.md BEFORE stashing to preserve uncommitted changes
-    let content_md = if config.site.site_type == "personal" {
+    let content_md = if config.site.site_type == SiteType::Personal {
         let content_md_path = project.root.join("content.md");
         if content_md_path.exists() {
             Some(
