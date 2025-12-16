@@ -31,10 +31,6 @@ body {
     line-height: 1.6;
 }
 
-pre {
-    white-space: pre-wrap;
-}
-
 .app-container {
     min-height: 100vh;
     background-color: var(--bg);
