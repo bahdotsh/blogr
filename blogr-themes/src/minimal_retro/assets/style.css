@@ -62,6 +62,10 @@ html {
   scroll-behavior: smooth;
 }
 
+pre {
+  white-space: pre-wrap;
+}
+
 body {
   font-family: var(--font-serif);
   background-color: var(--color-background);

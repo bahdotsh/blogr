@@ -531,6 +531,7 @@ pre {
     padding: var(--spacing-md);
     overflow-x: auto;
     margin: var(--spacing-md) 0;
+    white-space: pre-wrap;
 }
 
 pre code {
