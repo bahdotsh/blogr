@@ -62,7 +62,7 @@ jobs:
           } >> $GITHUB_OUTPUT
 
       - name: Upload changelog artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: changelog
           path: |
@@ -136,14 +136,14 @@ jobs:
       # Upload build artifacts
       - name: Upload build artifacts (Unix)
         if: matrix.os != 'windows-latest'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.asset_name }}
           path: target/release/${{ matrix.asset_name }}.tar.gz
 
       - name: Upload build artifacts (Windows)
         if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.asset_name }}
           path: target/release/${{ matrix.asset_name }}.zip
