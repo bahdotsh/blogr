@@ -34,7 +34,10 @@ pub fn render_markdown(markdown: &str) -> Result<String> {
                     CodeBlockKind::Indented => String::new(),
                 };
                 let class_attr = if !lang.is_empty() {
-                    format!(" class=\"language-{}\"", html_escape(&lang).replace(' ', "-"))
+                    format!(
+                        " class=\"language-{}\"",
+                        html_escape(&lang).replace(' ', "-")
+                    )
                 } else {
                     String::new()
                 };
