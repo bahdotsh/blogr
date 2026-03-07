@@ -117,7 +117,7 @@ impl NewsletterComposer {
         context.insert("post", post);
 
         // Convert markdown to HTML
-        let html_content = markdown::render_markdown(&post.content)?;
+        let html_content = markdown::render_markdown(&post.content, self.config.math.enabled)?;
         context.insert("content", &html_content);
 
         // Calculate reading time
@@ -160,7 +160,7 @@ impl NewsletterComposer {
         context.insert("site", &site_context);
 
         // Convert markdown content to HTML
-        let html_content = markdown::render_markdown(&content)?;
+        let html_content = markdown::render_markdown(&content, self.config.math.enabled)?;
         context.insert("content", &html_content);
 
         // Add newsletter metadata

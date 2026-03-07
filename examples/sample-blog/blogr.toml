@@ -1,7 +1,7 @@
 [blog]
-title = "Syntax Highlighting Demo"
+title = "Sample Blog"
 author = "blogr"
-description = "A sample project demonstrating syntax highlighting in code blocks"
+description = "A sample blogr project showcasing various features"
 base_url = "https://example.com"
 language = "en"
 timezone = "UTC"
@@ -20,3 +20,6 @@ auto_reload = true
 
 [search]
 enabled = false
+
+[math]
+enabled = true

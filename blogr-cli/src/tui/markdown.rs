@@ -1,5 +1,5 @@
 use crate::tui::theme::TuiTheme;
-use pulldown_cmark::{Event, Options, Parser, Tag};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use ratatui::text::{Line, Span};
 
 /// Markdown renderer for the TUI
@@ -37,7 +37,7 @@ impl MarkdownRenderer {
         for event in parser {
             match event {
                 Event::Start(tag) => match tag {
-                    Tag::Heading(level, _, _) => {
+                    Tag::Heading { level, .. } => {
                         if !current_line.is_empty() {
                             lines.push(Line::from(current_line));
                             current_line = Vec::new();
@@ -58,7 +58,7 @@ impl MarkdownRenderer {
                         }
                         in_code_block = true;
                     }
-                    Tag::BlockQuote => {
+                    Tag::BlockQuote(_) => {
                         if !current_line.is_empty() {
                             lines.push(Line::from(current_line));
                             current_line = Vec::new();
@@ -90,14 +90,14 @@ impl MarkdownRenderer {
                             current_line = Vec::new();
                         }
                     }
-                    Tag::Link(_, _url, _title) => {
+                    Tag::Link { .. } => {
                         current_line
                             .push(Span::styled("[".to_string(), theme.markdown_link_style()));
                     }
                     _ => {}
                 },
                 Event::End(tag) => match tag {
-                    Tag::Heading(_, _, _) => {
+                    TagEnd::Heading(_) => {
                         if !current_line.is_empty() {
                             lines.push(Line::from(current_line));
                             current_line = Vec::new();
@@ -106,13 +106,13 @@ impl MarkdownRenderer {
                         in_header = false;
                         header_level = 0;
                     }
-                    Tag::Emphasis => {
+                    TagEnd::Emphasis => {
                         in_emphasis = false;
                     }
-                    Tag::Strong => {
+                    TagEnd::Strong => {
                         in_strong = false;
                     }
-                    Tag::CodeBlock(_) => {
+                    TagEnd::CodeBlock => {
                         if !current_line.is_empty() {
                             lines.push(Line::from(current_line));
                             current_line = Vec::new();
@@ -120,7 +120,7 @@ impl MarkdownRenderer {
                         lines.push(Line::from("")); // Add spacing after code blocks
                         in_code_block = false;
                     }
-                    Tag::BlockQuote => {
+                    TagEnd::BlockQuote(_) => {
                         if !current_line.is_empty() {
                             lines.push(Line::from(current_line));
                             current_line = Vec::new();
@@ -128,7 +128,7 @@ impl MarkdownRenderer {
                         lines.push(Line::from("")); // Add spacing after blockquotes
                         in_blockquote = false;
                     }
-                    Tag::List(_) => {
+                    TagEnd::List(_) => {
                         if !current_line.is_empty() {
                             lines.push(Line::from(current_line));
                             current_line = Vec::new();
@@ -136,20 +136,20 @@ impl MarkdownRenderer {
                         lines.push(Line::from("")); // Add spacing after lists
                         list_level = list_level.saturating_sub(1);
                     }
-                    Tag::Item => {
+                    TagEnd::Item => {
                         if !current_line.is_empty() {
                             lines.push(Line::from(current_line));
                             current_line = Vec::new();
                         }
                     }
-                    Tag::Paragraph => {
+                    TagEnd::Paragraph => {
                         if !current_line.is_empty() {
                             lines.push(Line::from(current_line));
                             current_line = Vec::new();
                         }
                         lines.push(Line::from("")); // Add spacing after paragraphs
                     }
-                    Tag::Link(_, _url, _title) => {
+                    TagEnd::Link => {
                         current_line
                             .push(Span::styled("]".to_string(), theme.markdown_link_style()));
                     }
@@ -196,6 +196,24 @@ impl MarkdownRenderer {
                 }
                 Event::Code(code) => {
                     current_line.push(Span::styled(code.to_string(), theme.markdown_code_style()));
+                }
+                Event::InlineMath(text) => {
+                    current_line.push(Span::styled(
+                        format!("${}$", text),
+                        theme.markdown_code_style(),
+                    ));
+                }
+                Event::DisplayMath(text) => {
+                    if !current_line.is_empty() {
+                        lines.push(Line::from(current_line));
+                        current_line = Vec::new();
+                    }
+                    current_line.push(Span::styled(
+                        format!("$${}$$", text),
+                        theme.markdown_code_style(),
+                    ));
+                    lines.push(Line::from(current_line));
+                    current_line = Vec::new();
                 }
                 Event::Html(html) => {
                     // For now, just display HTML as-is

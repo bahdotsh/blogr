@@ -32,6 +32,8 @@ pub struct Config {
     pub newsletter: NewsletterConfig,
     #[serde(default)]
     pub site: SiteConfig,
+    #[serde(default)]
+    pub math: MathConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -39,6 +41,24 @@ pub struct SiteConfig {
     /// Type of site: "blog" or "personal"
     #[serde(default)]
     pub site_type: SiteType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MathConfig {
+    #[serde(default = "default_math_enabled")]
+    pub enabled: bool,
+}
+
+fn default_math_enabled() -> bool {
+    false
+}
+
+impl Default for MathConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_math_enabled(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -306,6 +326,7 @@ impl Default for Config {
             search: SearchConfig::default(),
             newsletter: NewsletterConfig::default(),
             site: SiteConfig::default(),
+            math: MathConfig::default(),
         }
     }
 }
