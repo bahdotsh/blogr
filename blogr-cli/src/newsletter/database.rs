@@ -368,28 +368,36 @@ impl NewsletterDatabase {
             .unwrap_or_default();
 
         if table_sql.contains("CHECK") {
-            let migration_sql = "
-                CREATE TABLE subscribers_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email TEXT UNIQUE NOT NULL,
-                    status TEXT NOT NULL,
-                    subscribed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    approved_at DATETIME,
-                    declined_at DATETIME,
-                    source_email_id TEXT,
-                    notes TEXT,
-                    soft_bounce_count INTEGER NOT NULL DEFAULT 0
-                );
-                INSERT INTO subscribers_new (id, email, status, subscribed_at, approved_at, declined_at, source_email_id, notes, soft_bounce_count)
-                    SELECT id, email, status, subscribed_at, approved_at, declined_at, source_email_id, notes, soft_bounce_count FROM subscribers;
-                DROP TABLE subscribers;
-                ALTER TABLE subscribers_new RENAME TO subscribers;
-                CREATE INDEX IF NOT EXISTS idx_subscribers_status ON subscribers(status);
-                CREATE INDEX IF NOT EXISTS idx_subscribers_email ON subscribers(email);
-                CREATE INDEX IF NOT EXISTS idx_subscribers_subscribed_at ON subscribers(subscribed_at);
-            ";
+            // Wrap in an explicit transaction so the migration is atomic —
+            // if anything fails, the original table is preserved.
+            let migration_result: Result<(), rusqlite::Error> = (|| {
+                conn.execute_batch("BEGIN IMMEDIATE")?;
+                conn.execute_batch(
+                    "CREATE TABLE subscribers_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        email TEXT UNIQUE NOT NULL,
+                        status TEXT NOT NULL,
+                        subscribed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        approved_at DATETIME,
+                        declined_at DATETIME,
+                        source_email_id TEXT,
+                        notes TEXT,
+                        soft_bounce_count INTEGER NOT NULL DEFAULT 0
+                    );
+                    INSERT INTO subscribers_new (id, email, status, subscribed_at, approved_at, declined_at, source_email_id, notes, soft_bounce_count)
+                        SELECT id, email, status, subscribed_at, approved_at, declined_at, source_email_id, notes, soft_bounce_count FROM subscribers;
+                    DROP TABLE subscribers;
+                    ALTER TABLE subscribers_new RENAME TO subscribers;
+                    CREATE INDEX IF NOT EXISTS idx_subscribers_status ON subscribers(status);
+                    CREATE INDEX IF NOT EXISTS idx_subscribers_email ON subscribers(email);
+                    CREATE INDEX IF NOT EXISTS idx_subscribers_subscribed_at ON subscribers(subscribed_at);",
+                )?;
+                conn.execute_batch("COMMIT")?;
+                Ok(())
+            })();
 
-            if let Err(e) = conn.execute_batch(migration_sql) {
+            if let Err(e) = migration_result {
+                let _ = conn.execute_batch("ROLLBACK");
                 eprintln!(
                     "Warning: failed to migrate subscribers table CHECK constraint: {}. \
                      This is non-fatal but 'unconfirmed' status may not work on this database.",
@@ -968,7 +976,7 @@ impl NewsletterDatabase {
 
     // --- Bounce operations ---
 
-    /// Record a bounce event
+    /// Record a bounce event and apply bounce policy atomically.
     pub fn record_bounce(
         &self,
         email: &str,
@@ -976,7 +984,9 @@ impl NewsletterDatabase {
         reason: Option<&str>,
     ) -> Result<()> {
         let conn = self.get_conn()?;
-        conn.execute(
+        let tx = conn.unchecked_transaction()?;
+
+        tx.execute(
             "INSERT INTO bounce_log (subscriber_email, bounce_type, reason) VALUES (?1, ?2, ?3)",
             params![email, bounce_type.to_string(), reason],
         )?;
@@ -984,24 +994,25 @@ impl NewsletterDatabase {
         match bounce_type {
             BounceType::Hard | BounceType::Complaint => {
                 // Immediate decline
-                conn.execute(
+                tx.execute(
                     "UPDATE subscribers SET status = 'declined', declined_at = datetime('now') WHERE email = ?1",
                     params![email],
                 )?;
             }
             BounceType::Soft => {
                 // Increment soft bounce count and decline if >= 3
-                conn.execute(
+                tx.execute(
                     "UPDATE subscribers SET soft_bounce_count = soft_bounce_count + 1 WHERE email = ?1",
                     params![email],
                 )?;
-                conn.execute(
+                tx.execute(
                     "UPDATE subscribers SET status = 'declined', declined_at = datetime('now') WHERE email = ?1 AND soft_bounce_count >= 3",
                     params![email],
                 )?;
             }
         }
 
+        tx.commit()?;
         Ok(())
     }
 
@@ -1076,17 +1087,36 @@ impl NewsletterDatabase {
         Ok(tags)
     }
 
-    /// Get subscribers by tag
+    /// Get subscribers by tag with optional pagination
     pub fn get_subscribers_by_tag(&self, tag: &str) -> Result<Vec<Subscriber>> {
+        self.get_subscribers_by_tag_paginated(tag, None, None)
+    }
+
+    /// Get subscribers by tag with pagination support
+    pub fn get_subscribers_by_tag_paginated(
+        &self,
+        tag: &str,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Result<Vec<Subscriber>> {
         let conn = self.get_conn()?;
-        let mut stmt = conn.prepare(
+
+        let mut query = String::from(
             "SELECT s.id, s.email, s.status, s.subscribed_at, s.approved_at, s.declined_at, s.source_email_id, s.notes
              FROM subscribers s
              INNER JOIN subscriber_tags st ON st.subscriber_id = s.id
              WHERE st.tag = ?1
              ORDER BY s.subscribed_at DESC",
-        )?;
+        );
 
+        if let Some(limit) = limit {
+            query.push_str(&format!(" LIMIT {}", limit));
+        }
+        if let Some(offset) = offset {
+            query.push_str(&format!(" OFFSET {}", offset));
+        }
+
+        let mut stmt = conn.prepare(&query)?;
         let subscribers = stmt
             .query_map(params![tag], Self::row_to_subscriber)?
             .filter_map(|r| r.ok())
@@ -1108,6 +1138,31 @@ impl NewsletterDatabase {
             .filter_map(|r| r.ok())
             .collect();
         Ok(tags)
+    }
+
+    /// Replace all tags for a subscriber atomically (remove old, add new).
+    pub fn set_tags(&self, subscriber_id: i64, tags: &[String]) -> Result<()> {
+        let conn = self.get_conn()?;
+        let tx = conn.unchecked_transaction()?;
+
+        // Remove all existing tags
+        tx.execute(
+            "DELETE FROM subscriber_tags WHERE subscriber_id = ?1",
+            params![subscriber_id],
+        )?;
+
+        // Insert new tags
+        if !tags.is_empty() {
+            let mut stmt = tx.prepare(
+                "INSERT OR IGNORE INTO subscriber_tags (subscriber_id, tag) VALUES (?1, ?2)",
+            )?;
+            for tag in tags {
+                stmt.execute(params![subscriber_id, tag])?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
     }
 
     /// Add tags in batch for a subscriber
@@ -1147,12 +1202,13 @@ impl NewsletterDatabase {
         Ok(())
     }
 
-    /// Verify a confirmation token and promote the subscriber
+    /// Verify a confirmation token and promote the subscriber atomically.
     pub fn verify_confirmation_token(&self, token: &str) -> Result<Option<String>> {
         let conn = self.get_conn()?;
+        let tx = conn.unchecked_transaction()?;
 
         // Find the token and check expiry
-        let result = conn.query_row(
+        let result = tx.query_row(
             "SELECT ct.id, ct.subscriber_id, s.email
              FROM confirmation_tokens ct
              INNER JOIN subscribers s ON s.id = ct.subscriber_id
@@ -1170,19 +1226,23 @@ impl NewsletterDatabase {
         match result {
             Ok((token_id, subscriber_id, email)) => {
                 // Mark token as used
-                conn.execute(
+                tx.execute(
                     "UPDATE confirmation_tokens SET used_at = datetime('now') WHERE id = ?1",
                     params![token_id],
                 )?;
                 // Promote subscriber from Unconfirmed to Approved (double opt-in confirmed)
                 let now = Utc::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
-                conn.execute(
+                tx.execute(
                     "UPDATE subscribers SET status = 'approved', approved_at = ?1 WHERE id = ?2 AND status = 'unconfirmed'",
                     params![now, subscriber_id],
                 )?;
+                tx.commit()?;
                 Ok(Some(email))
             }
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                // No matching token — nothing to commit
+                Ok(None)
+            }
             Err(e) => Err(e.into()),
         }
     }
@@ -1600,6 +1660,185 @@ mod tests {
             "nonexistent@example.com",
             SubscriberStatus::Declined
         )?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cleanup_old_send_recipients() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+        let send_id = db.record_send("Cleanup Test", 2, 2, 0)?;
+
+        let results = vec![
+            ("a@example.com".to_string(), "sent", None),
+            ("b@example.com".to_string(), "sent", None),
+        ];
+        db.record_send_recipients_batch(send_id, &results)?;
+
+        // Records just inserted should NOT be deleted with 90 days
+        let deleted = db.cleanup_old_send_recipients(90)?;
+        assert_eq!(deleted, 0);
+
+        // Backdate the records to make them old, then clean up.
+        // Scope the connection so it's returned to the pool before cleanup.
+        {
+            let conn = db.get_conn()?;
+            conn.execute(
+                "UPDATE send_recipients SET sent_at = datetime('now', '-100 days')",
+                [],
+            )?;
+        }
+        let deleted = db.cleanup_old_send_recipients(90)?;
+        assert_eq!(deleted, 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cleanup_completed_send_queue() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        let mut sub = Subscriber::new("cleanup@example.com".to_string(), None);
+        sub.status = SubscriberStatus::Approved;
+        db.add_subscriber(&sub)?;
+
+        let send_id = db.record_send("Cleanup Queue", 1, 0, 0)?;
+        db.create_send_queue(send_id)?;
+
+        // Mark item as sent (completed)
+        let batch = db.get_send_queue_batch(send_id, 10)?;
+        assert_eq!(batch.len(), 1);
+        db.update_send_queue_item(batch[0].id, SendQueueStatus::Sent, None)?;
+
+        // Cleanup should remove completed queue items
+        let deleted = db.cleanup_completed_send_queue()?;
+        assert_eq!(deleted, 1);
+
+        // Queue should be empty now
+        let batch = db.get_send_queue_batch(send_id, 10)?;
+        assert!(batch.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_send_queue_with_tag() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        // Create approved subscribers, some tagged
+        for i in 0..5 {
+            let mut sub = Subscriber::new(format!("tag_queue{}@example.com", i), None);
+            sub.status = SubscriberStatus::Approved;
+            let id = db.add_subscriber(&sub)?;
+            if i < 3 {
+                db.add_tag(id, "vip")?;
+            }
+        }
+
+        // Queue with tag filter should only include tagged subscribers
+        let send_id = db.record_send("Tagged Send", 3, 0, 0)?;
+        let queued = db.create_send_queue_with_tag(send_id, Some("vip"))?;
+        assert_eq!(queued, 3);
+
+        // Queue without tag should include all approved subscribers
+        let send_id2 = db.record_send("All Send", 5, 0, 0)?;
+        let queued_all = db.create_send_queue_with_tag(send_id2, None)?;
+        assert_eq!(queued_all, 5);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_tags_atomic() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        let sub = Subscriber::new("settags@example.com".to_string(), None);
+        let id = db.add_subscriber(&sub)?;
+
+        db.add_tag(id, "old1")?;
+        db.add_tag(id, "old2")?;
+        assert_eq!(db.get_tags(id)?.len(), 2);
+
+        // set_tags should atomically replace all tags
+        db.set_tags(id, &["new1".to_string(), "new2".to_string(), "new3".to_string()])?;
+        let tags = db.get_tags(id)?;
+        assert_eq!(tags, vec!["new1", "new2", "new3"]);
+
+        // set_tags with empty should clear all
+        db.set_tags(id, &[])?;
+        assert!(db.get_tags(id)?.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_bounce_nonexistent_subscriber() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        // Recording a bounce for a non-existent subscriber should succeed
+        // (the bounce is logged, but no subscriber row to update)
+        db.record_bounce("ghost@example.com", &BounceType::Hard, Some("550"))?;
+
+        let bounces = db.get_bounces("ghost@example.com")?;
+        assert_eq!(bounces.len(), 1);
+        assert_eq!(bounces[0].bounce_type, BounceType::Hard);
+
+        // Bounce count should still work
+        let count = db.get_bounce_count("ghost@example.com")?;
+        assert_eq!(count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_expired_token_cleanup() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        let mut sub = Subscriber::new("expire@example.com".to_string(), None);
+        sub.status = SubscriberStatus::Unconfirmed;
+        let id = db.add_subscriber(&sub)?;
+
+        // Create a token and then backdate it so it's expired.
+        // Scope the connection so it's returned to the pool.
+        db.create_confirmation_token(id, "expired-token", 1)?;
+        {
+            let conn = db.get_conn()?;
+            conn.execute(
+                "UPDATE confirmation_tokens SET expires_at = datetime('now', '-1 hour') WHERE token = 'expired-token'",
+                [],
+            )?;
+        }
+
+        // Expired token should not verify
+        let result = db.verify_confirmation_token("expired-token")?;
+        assert!(result.is_none());
+
+        // Cleanup should remove expired tokens
+        let cleaned = db.cleanup_expired_tokens()?;
+        assert_eq!(cleaned, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_subscribers_by_tag_paginated() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        for i in 0..10 {
+            let sub = Subscriber::new(format!("paged_tag{}@example.com", i), None);
+            let id = db.add_subscriber(&sub)?;
+            db.add_tag(id, "paginated")?;
+        }
+
+        let page1 = db.get_subscribers_by_tag_paginated("paginated", Some(3), Some(0))?;
+        assert_eq!(page1.len(), 3);
+
+        let page2 = db.get_subscribers_by_tag_paginated("paginated", Some(3), Some(3))?;
+        assert_eq!(page2.len(), 3);
+        assert_ne!(page1[0].email, page2[0].email);
+
+        let all = db.get_subscribers_by_tag("paginated")?;
+        assert_eq!(all.len(), 10);
 
         Ok(())
     }

@@ -109,14 +109,17 @@ impl NewsletterManager {
             .context("NEWSLETTER_SMTP_PASSWORD environment variable not set")
     }
 
-    /// Get HMAC secret for unsubscribe tokens, from env or derive from SMTP password
-    pub(crate) fn get_hmac_secret(&self) -> Result<String> {
+    /// Get HMAC secret for unsubscribe tokens from environment.
+    /// Falls back to SMTP password with a loud warning for development convenience,
+    /// but this should be explicitly configured in production.
+    pub fn get_hmac_secret(&self) -> Result<String> {
         match env::var("NEWSLETTER_HMAC_SECRET") {
-            Ok(secret) => Ok(secret),
-            Err(_) => {
+            Ok(secret) if !secret.is_empty() => Ok(secret),
+            _ => {
                 eprintln!(
-                    "Warning: NEWSLETTER_HMAC_SECRET not set. Deriving from SMTP password. \
-                     Set a dedicated NEWSLETTER_HMAC_SECRET for independent key rotation."
+                    "WARNING: NEWSLETTER_HMAC_SECRET not set. Deriving from SMTP password. \
+                     Set a dedicated NEWSLETTER_HMAC_SECRET for production use — compromising \
+                     the SMTP password would also compromise all unsubscribe tokens."
                 );
                 self.get_smtp_password()
                     .map(|p| format!("blogr-newsletter-{}", p))

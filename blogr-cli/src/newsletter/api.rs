@@ -48,6 +48,9 @@ impl Default for ApiConfig {
     }
 }
 
+/// Maximum concurrent background confirmation email sends.
+const MAX_CONFIRMATION_TASKS: usize = 10;
+
 /// API server application state
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -55,6 +58,8 @@ pub struct ApiState {
     pub newsletter_manager: Arc<NewsletterManager>,
     pub config: Arc<Config>,
     pub api_config: Arc<ApiConfig>,
+    /// Semaphore to bound concurrent confirmation email sends.
+    confirmation_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 /// API response wrapper
@@ -169,6 +174,9 @@ impl NewsletterApiServer {
             newsletter_manager: Arc::new(newsletter_manager),
             config: Arc::new(config),
             api_config: Arc::new(api_config),
+            confirmation_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONFIRMATION_TASKS,
+            )),
         };
 
         Self { state }
@@ -199,6 +207,32 @@ impl NewsletterApiServer {
     fn create_router(self) -> Router {
         let api_key = self.state.api_config.api_key.clone();
         let cors_enabled = self.state.api_config.cors_enabled;
+
+        // Build CORS layer before self.state is moved — restrict to configured
+        // api_base_url origin if available, otherwise permissive for local dev.
+        let cors_layer = if cors_enabled {
+            let cors = if let Some(ref base_url) = self.state.config.newsletter.api_base_url {
+                if let Ok(origin) = base_url.parse::<axum::http::HeaderValue>() {
+                    CorsLayer::new()
+                        .allow_origin(origin)
+                        .allow_methods(Any)
+                        .allow_headers(Any)
+                } else {
+                    CorsLayer::new()
+                        .allow_origin(Any)
+                        .allow_methods(Any)
+                        .allow_headers(Any)
+                }
+            } else {
+                CorsLayer::new()
+                    .allow_origin(Any)
+                    .allow_methods(Any)
+                    .allow_headers(Any)
+            };
+            Some(cors)
+        } else {
+            None
+        };
 
         // Public routes (no auth required)
         let public_routes = Router::new()
@@ -233,14 +267,8 @@ impl NewsletterApiServer {
 
         let mut app = public_routes.merge(protected_routes).with_state(self.state);
 
-        // Add CORS if enabled
-        if cors_enabled {
-            app = app.layer(
-                CorsLayer::new()
-                    .allow_origin(Any)
-                    .allow_methods(Any)
-                    .allow_headers(Any),
-            );
+        if let Some(cors) = cors_layer {
+            app = app.layer(cors);
         }
 
         app
@@ -323,17 +351,15 @@ async fn handle_unsubscribe(
         );
     }
 
+    // Use a uniform response regardless of whether the email was found to avoid
+    // leaking subscriber existence to unauthenticated callers.
     match state
         .newsletter_manager
         .database()
         .update_subscriber_status_by_email(&params.email, SubscriberStatus::Declined)
     {
-        Ok(true) => Html(
-            "<html><body><h2>Unsubscribed</h2><p>You have been successfully unsubscribed from the newsletter.</p></body></html>"
-                .to_string(),
-        ),
-        Ok(false) => Html(
-            "<html><body><h2>Not found</h2><p>This email address was not found in our subscriber list.</p></body></html>"
+        Ok(_) => Html(
+            "<html><body><h2>Unsubscribed</h2><p>If this email was subscribed, it has been removed from the newsletter.</p></body></html>"
                 .to_string(),
         ),
         Err(_) => Html(
@@ -522,28 +548,36 @@ async fn create_subscriber(
                     if let Some(confirm_url) = confirm_base {
                         let manager = state.newsletter_manager.clone();
                         let email_addr = request.email.clone();
-                        // Send confirmation email in a background task
-                        tokio::task::spawn_blocking(move || match manager.create_sender(None) {
-                            Ok(sender_instance) => match manager.get_smtp_password() {
-                                Ok(password) => {
-                                    if let Err(e) = sender_instance.send_confirmation_email(
-                                        &email_addr,
-                                        &token,
-                                        &confirm_url,
-                                        &password,
-                                    ) {
-                                        eprintln!("Failed to send confirmation email: {}", e);
-                                    }
+                        let semaphore = state.confirmation_semaphore.clone();
+                        // Send confirmation email in a bounded background task
+                        tokio::spawn(async move {
+                            // Acquire permit to bound concurrent SMTP connections
+                            let _permit = match semaphore.acquire().await {
+                                Ok(p) => p,
+                                Err(_) => {
+                                    eprintln!("Confirmation semaphore closed, cannot send email");
+                                    return;
+                                }
+                            };
+                            let result = tokio::task::spawn_blocking(move || {
+                                let sender_instance = manager.create_sender(None)?;
+                                let password = manager.get_smtp_password()?;
+                                sender_instance.send_confirmation_email(
+                                    &email_addr,
+                                    &token,
+                                    &confirm_url,
+                                    &password,
+                                )
+                            })
+                            .await;
+                            match result {
+                                Ok(Err(e)) => {
+                                    eprintln!("Failed to send confirmation email: {}", e);
                                 }
                                 Err(e) => {
-                                    eprintln!(
-                                            "SMTP password not configured, cannot send confirmation email: {}",
-                                            e
-                                        );
+                                    eprintln!("Confirmation email task panicked: {}", e);
                                 }
-                            },
-                            Err(e) => {
-                                eprintln!("Failed to create sender for confirmation email: {}", e);
+                                Ok(Ok(())) => {}
                             }
                         });
                     }
@@ -799,17 +833,8 @@ async fn update_subscriber_tags(
     })?;
     let db = state.newsletter_manager.database();
 
-    // Get current tags and remove ones not in the new set
-    if let Ok(current_tags) = db.get_tags(id) {
-        for tag in &current_tags {
-            if !request.tags.contains(tag) {
-                let _ = db.remove_tag(id, tag);
-            }
-        }
-    }
-
-    // Add new tags
-    if let Err(e) = db.add_tags_batch(id, &request.tags) {
+    // Atomically replace all tags in a single transaction
+    if let Err(e) = db.set_tags(id, &request.tags) {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiResponse::error(format!("Failed to set tags: {}", e))),
@@ -958,6 +983,9 @@ mod tests {
             newsletter_manager: Arc::new(newsletter_manager),
             config: Arc::new(config),
             api_config: Arc::new(ApiConfig::default()),
+            confirmation_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONFIRMATION_TASKS,
+            )),
         };
         (state, temp_dir)
     }
