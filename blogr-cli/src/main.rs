@@ -283,6 +283,9 @@ enum NewsletterAction {
         /// Interactive confirmation before sending
         #[arg(long)]
         interactive: bool,
+        /// Only send to subscribers with this tag
+        #[arg(long)]
+        tags: Option<String>,
     },
     /// Send custom newsletter
     SendCustom {
@@ -293,6 +296,9 @@ enum NewsletterAction {
         /// Interactive confirmation before sending
         #[arg(long)]
         interactive: bool,
+        /// Only send to subscribers with this tag
+        #[arg(long)]
+        tags: Option<String>,
     },
     /// Preview newsletter without sending (latest post)
     DraftLatest,
@@ -339,6 +345,25 @@ enum NewsletterAction {
         #[command(subcommand)]
         action: PluginAction,
     },
+    /// Clean up old send data
+    Cleanup {
+        /// Delete send recipients older than this many days
+        #[arg(long, default_value = "90")]
+        days: u32,
+    },
+    /// Tag a subscriber
+    Tag {
+        /// Subscriber email
+        email: String,
+        /// Add a tag
+        #[arg(long)]
+        add: Option<String>,
+        /// Remove a tag
+        #[arg(long)]
+        remove: Option<String>,
+    },
+    /// List all tags with subscriber counts
+    Tags,
     /// Start API server for external integrations
     ApiServer {
         /// Port to serve on
@@ -502,14 +527,23 @@ async fn main() -> Result<()> {
                 output,
                 status,
             } => commands::newsletter::handle_export(&format, output.as_deref(), status),
-            NewsletterAction::SendLatest { interactive } => {
-                commands::newsletter::handle_send_latest(interactive).await
+            NewsletterAction::SendLatest { interactive, tags } => {
+                commands::newsletter::handle_send_latest(interactive, tags.as_deref()).await
             }
             NewsletterAction::SendCustom {
                 subject,
                 content,
                 interactive,
-            } => commands::newsletter::handle_send_custom(subject, content, interactive).await,
+                tags,
+            } => {
+                commands::newsletter::handle_send_custom(
+                    subject,
+                    content,
+                    interactive,
+                    tags.as_deref(),
+                )
+                .await
+            }
             NewsletterAction::DraftLatest => commands::newsletter::handle_draft_latest().await,
             NewsletterAction::DraftCustom { subject, content } => {
                 commands::newsletter::handle_draft_custom(subject, content).await
@@ -537,6 +571,11 @@ async fn main() -> Result<()> {
                 )
                 .await
             }
+            NewsletterAction::Cleanup { days } => commands::newsletter::handle_cleanup(days).await,
+            NewsletterAction::Tag { email, add, remove } => {
+                commands::newsletter::handle_tag(&email, add.as_deref(), remove.as_deref()).await
+            }
+            NewsletterAction::Tags => commands::newsletter::handle_tags().await,
             NewsletterAction::Plugin { action } => match action {
                 PluginAction::List => commands::newsletter::handle_plugin_list().await,
                 PluginAction::Info { name } => {

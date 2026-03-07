@@ -963,6 +963,7 @@ impl ModernApprovalApp {
                         SubscriberStatus::Pending => pending_style,
                         SubscriberStatus::Approved => approved_style,
                         SubscriberStatus::Declined => declined_style,
+                        SubscriberStatus::Unconfirmed => pending_style,
                     };
 
                     let subscribed_date = subscriber

@@ -238,11 +238,34 @@ impl MigrationManager {
             println!("Skipping {} existing subscribers", existing_emails.len());
         }
 
+        // Collect tags from imported data keyed by email
+        let tags_by_email: std::collections::HashMap<String, Vec<String>> = imported_data
+            .iter()
+            .filter(|imp| !imp.tags.is_empty())
+            .map(|imp| (imp.email.clone(), imp.tags.clone()))
+            .collect();
+
         // Batch insert all new subscribers in a single transaction
         if !new_subscribers.is_empty() {
             match self.database.add_subscribers_batch(&new_subscribers) {
                 Ok(count) => {
                     result.successfully_imported = count;
+
+                    // Store tags for imported subscribers
+                    for sub in &new_subscribers {
+                        if let Some(tags) = tags_by_email.get(&sub.email) {
+                            if !tags.is_empty() {
+                                if let Ok(Some(db_sub)) =
+                                    self.database.get_subscriber_by_email(&sub.email)
+                                {
+                                    if let Some(id) = db_sub.id {
+                                        let _ = self.database.add_tags_batch(id, tags);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     result.imported_subscribers = new_subscribers;
                     println!("Imported {} new subscribers", count);
                 }

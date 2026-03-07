@@ -8,7 +8,7 @@ use axum::{
     extract::{Path, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
-    response::{Json, Response},
+    response::{Html, Json, Response},
     routing::{delete, get, post, put},
     Router,
 };
@@ -19,8 +19,11 @@ use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 
+use super::database::BounceRecord;
+use super::webhooks::BounceWebhookPayload;
 use super::{NewsletterManager, Subscriber, SubscriberStatus};
 use crate::config::Config;
+use crate::newsletter::sender;
 
 /// API server configuration
 #[derive(Debug, Clone)]
@@ -91,6 +94,7 @@ pub struct SubscriberQuery {
     pub status: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    pub tag: Option<String>,
 }
 
 /// Subscriber creation request
@@ -108,6 +112,12 @@ pub struct UpdateSubscriberRequest {
     pub notes: Option<String>,
 }
 
+/// Tag update request
+#[derive(Deserialize)]
+pub struct UpdateTagsRequest {
+    pub tags: Vec<String>,
+}
+
 /// Statistics response
 #[derive(Serialize)]
 pub struct StatsResponse {
@@ -115,6 +125,32 @@ pub struct StatsResponse {
     pub approved_subscribers: i64,
     pub pending_subscribers: i64,
     pub declined_subscribers: i64,
+}
+
+/// Tag with count
+#[derive(Serialize)]
+pub struct TagInfo {
+    pub tag: String,
+    pub count: i64,
+}
+
+/// Unsubscribe query parameters
+#[derive(Deserialize)]
+pub struct UnsubscribeQuery {
+    pub email: String,
+    pub token: String,
+}
+
+/// Confirm query parameters
+#[derive(Deserialize)]
+pub struct ConfirmQuery {
+    pub token: String,
+}
+
+/// Bounce query parameters
+#[derive(Deserialize)]
+pub struct BounceQuery {
+    pub email: String,
 }
 
 /// Newsletter API server
@@ -164,29 +200,38 @@ impl NewsletterApiServer {
         let api_key = self.state.api_config.api_key.clone();
         let cors_enabled = self.state.api_config.cors_enabled;
 
-        let mut app = Router::new()
-            // Health check (no auth required)
+        // Public routes (no auth required)
+        let public_routes = Router::new()
             .route("/health", get(health_check))
-            // Subscriber management
+            .route("/unsubscribe", get(handle_unsubscribe))
+            .route("/unsubscribe", post(handle_unsubscribe_post))
+            .route("/confirm", get(handle_confirm));
+
+        // Protected routes (auth required)
+        let mut protected_routes = Router::new()
             .route("/subscribers", get(list_subscribers))
             .route("/subscribers", post(create_subscriber))
             .route("/subscribers/{email}", get(get_subscriber))
             .route("/subscribers/{email}", put(update_subscriber))
             .route("/subscribers/{email}", delete(delete_subscriber))
-            // Import/export
+            .route("/subscribers/{email}/tags", put(update_subscriber_tags))
+            .route("/subscribers/{email}/tags", get(get_subscriber_tags))
             .route("/export", get(export_subscribers))
-            // Statistics
             .route("/stats", get(get_stats))
-            .with_state(self.state);
+            .route("/tags", get(list_tags))
+            .route("/webhooks/bounce", post(handle_bounce_webhook))
+            .route("/bounces", get(get_bounces));
 
         // Add API key authentication middleware if configured
         if let Some(key) = api_key {
             let key = Arc::new(key);
-            app = app.layer(middleware::from_fn(move |req, next| {
+            protected_routes = protected_routes.layer(middleware::from_fn(move |req, next| {
                 let key = Arc::clone(&key);
                 auth_middleware(req, next, key)
             }));
         }
+
+        let mut app = public_routes.merge(protected_routes).with_state(self.state);
 
         // Add CORS if enabled
         if cors_enabled {
@@ -204,11 +249,6 @@ impl NewsletterApiServer {
 
 /// Authentication middleware that checks for a valid API key
 async fn auth_middleware(req: Request, next: Next, api_key: Arc<String>) -> Response {
-    // Allow health check without auth
-    if req.uri().path() == "/health" {
-        return next.run(req).await;
-    }
-
     let auth_header = req
         .headers()
         .get("authorization")
@@ -260,11 +300,114 @@ async fn health_check() -> Json<ApiResponse<HashMap<String, String>>> {
     Json(ApiResponse::success(data))
 }
 
+// --- Public endpoints ---
+
+/// GET /unsubscribe?email={}&token={} — public unsubscribe endpoint
+async fn handle_unsubscribe(
+    State(state): State<ApiState>,
+    Query(params): Query<UnsubscribeQuery>,
+) -> Html<String> {
+    let hmac_secret = get_hmac_secret(&state);
+    if !sender::verify_unsubscribe_token(&params.email, &params.token, &hmac_secret) {
+        return Html(
+            "<html><body><h2>Invalid unsubscribe link</h2><p>This link is invalid or has expired.</p></body></html>"
+                .to_string(),
+        );
+    }
+
+    match state
+        .newsletter_manager
+        .database()
+        .update_subscriber_status_by_email(&params.email, SubscriberStatus::Declined)
+    {
+        Ok(true) => Html(
+            "<html><body><h2>Unsubscribed</h2><p>You have been successfully unsubscribed from the newsletter.</p></body></html>"
+                .to_string(),
+        ),
+        Ok(false) => Html(
+            "<html><body><h2>Not found</h2><p>This email address was not found in our subscriber list.</p></body></html>"
+                .to_string(),
+        ),
+        Err(_) => Html(
+            "<html><body><h2>Error</h2><p>An error occurred while processing your request. Please try again later.</p></body></html>"
+                .to_string(),
+        ),
+    }
+}
+
+/// POST /unsubscribe — RFC 8058 one-click unsubscribe
+async fn handle_unsubscribe_post(
+    State(state): State<ApiState>,
+    Query(params): Query<UnsubscribeQuery>,
+) -> StatusCode {
+    let hmac_secret = get_hmac_secret(&state);
+    if !sender::verify_unsubscribe_token(&params.email, &params.token, &hmac_secret) {
+        return StatusCode::FORBIDDEN;
+    }
+
+    match state
+        .newsletter_manager
+        .database()
+        .update_subscriber_status_by_email(&params.email, SubscriberStatus::Declined)
+    {
+        Ok(_) => StatusCode::OK,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+/// GET /confirm?token={} — public confirmation endpoint for double opt-in
+async fn handle_confirm(
+    State(state): State<ApiState>,
+    Query(params): Query<ConfirmQuery>,
+) -> Html<String> {
+    match state
+        .newsletter_manager
+        .database()
+        .verify_confirmation_token(&params.token)
+    {
+        Ok(Some(email)) => Html(format!(
+            "<html><body><h2>Confirmed!</h2><p>Your email address ({}) has been confirmed. You will now receive our newsletter.</p></body></html>",
+            email
+        )),
+        Ok(None) => Html(
+            "<html><body><h2>Invalid link</h2><p>This confirmation link is invalid or has expired.</p></body></html>"
+                .to_string(),
+        ),
+        Err(_) => Html(
+            "<html><body><h2>Error</h2><p>An error occurred. Please try again later.</p></body></html>"
+                .to_string(),
+        ),
+    }
+}
+
+// --- Protected endpoints ---
+
 /// List subscribers endpoint
 async fn list_subscribers(
     State(state): State<ApiState>,
     Query(params): Query<SubscriberQuery>,
 ) -> Result<Json<ApiResponse<Vec<Subscriber>>>, (StatusCode, Json<ApiResponse<()>>)> {
+    // If tag filter is provided, use tag-based query
+    if let Some(ref tag) = params.tag {
+        match state
+            .newsletter_manager
+            .database()
+            .get_subscribers_by_tag(tag)
+        {
+            Ok(subscribers) => return Ok(Json(ApiResponse::success(subscribers))),
+            Err(e) => {
+                eprintln!("Failed to list subscribers by tag: {}", e);
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiResponse::error(format!(
+                        "Failed to list subscribers: {}",
+                        e
+                    ))),
+                ));
+            }
+        }
+    }
+
     let status_filter = params
         .status
         .as_deref()
@@ -272,6 +415,7 @@ async fn list_subscribers(
             "pending" => Some(SubscriberStatus::Pending),
             "approved" => Some(SubscriberStatus::Approved),
             "declined" => Some(SubscriberStatus::Declined),
+            "unconfirmed" => Some(SubscriberStatus::Unconfirmed),
             _ => None,
         });
 
@@ -306,10 +450,17 @@ async fn create_subscriber(
         ));
     }
 
+    // If double opt-in is enabled, insert as Unconfirmed
+    let status = if state.config.newsletter.double_optin {
+        SubscriberStatus::Unconfirmed
+    } else {
+        request.status.unwrap_or(SubscriberStatus::Pending)
+    };
+
     let subscriber = Subscriber {
         id: None,
-        email: request.email,
-        status: request.status.unwrap_or(SubscriberStatus::Pending),
+        email: request.email.clone(),
+        status,
         subscribed_at: chrono::Utc::now(),
         approved_at: None,
         declined_at: None,
@@ -322,7 +473,22 @@ async fn create_subscriber(
         .database()
         .add_subscriber(&subscriber)
     {
-        Ok(_) => {
+        Ok(id) => {
+            // If double opt-in, create confirmation token and send email
+            if state.config.newsletter.double_optin {
+                let token = uuid::Uuid::new_v4().to_string();
+                if let Err(e) = state
+                    .newsletter_manager
+                    .database()
+                    .create_confirmation_token(id, &token, 48)
+                {
+                    eprintln!("Failed to create confirmation token: {}", e);
+                }
+                // Note: sending the confirmation email would require SMTP credentials
+                // which are not available in the API context. The token is stored for
+                // later retrieval or the confirmation URL can be returned.
+            }
+
             match state
                 .newsletter_manager
                 .database()
@@ -436,8 +602,8 @@ async fn update_subscriber(
                     subscriber.declined_at = Some(chrono::Utc::now());
                 }
             }
-            SubscriberStatus::Pending => {
-                subscriber.status = SubscriberStatus::Pending;
+            SubscriberStatus::Pending | SubscriberStatus::Unconfirmed => {
+                subscriber.status = status;
                 subscriber.approved_at = None;
                 subscriber.declined_at = None;
             }
@@ -506,7 +672,7 @@ async fn export_subscribers(
     list_subscribers(State(state), Query(params)).await
 }
 
-/// Get statistics endpoint (uses COUNT queries, not loading all subscribers)
+/// Get statistics endpoint
 async fn get_stats(
     State(state): State<ApiState>,
 ) -> Result<Json<ApiResponse<StatsResponse>>, (StatusCode, Json<ApiResponse<()>>)> {
@@ -531,6 +697,181 @@ async fn get_stats(
     };
 
     Ok(Json(ApiResponse::success(stats)))
+}
+
+// --- Tag endpoints ---
+
+/// PUT /subscribers/{email}/tags — set tags for a subscriber
+async fn update_subscriber_tags(
+    State(state): State<ApiState>,
+    Path(email): Path<String>,
+    Json(request): Json<UpdateTagsRequest>,
+) -> Result<Json<ApiResponse<Vec<String>>>, (StatusCode, Json<ApiResponse<()>>)> {
+    let subscriber = match state
+        .newsletter_manager
+        .database()
+        .get_subscriber_by_email(&email)
+    {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse::error(format!(
+                    "Subscriber '{}' not found",
+                    email
+                ))),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!("Database error: {}", e))),
+            ))
+        }
+    };
+
+    let id = subscriber.id.unwrap();
+    let db = state.newsletter_manager.database();
+
+    // Get current tags and remove ones not in the new set
+    if let Ok(current_tags) = db.get_tags(id) {
+        for tag in &current_tags {
+            if !request.tags.contains(tag) {
+                let _ = db.remove_tag(id, tag);
+            }
+        }
+    }
+
+    // Add new tags
+    if let Err(e) = db.add_tags_batch(id, &request.tags) {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(format!("Failed to set tags: {}", e))),
+        ));
+    }
+
+    match db.get_tags(id) {
+        Ok(tags) => Ok(Json(ApiResponse::success(tags))),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(format!("Failed to get tags: {}", e))),
+        )),
+    }
+}
+
+/// GET /subscribers/{email}/tags — get tags for a subscriber
+async fn get_subscriber_tags(
+    State(state): State<ApiState>,
+    Path(email): Path<String>,
+) -> Result<Json<ApiResponse<Vec<String>>>, (StatusCode, Json<ApiResponse<()>>)> {
+    let subscriber = match state
+        .newsletter_manager
+        .database()
+        .get_subscriber_by_email(&email)
+    {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse::error(format!(
+                    "Subscriber '{}' not found",
+                    email
+                ))),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!("Database error: {}", e))),
+            ))
+        }
+    };
+
+    match state
+        .newsletter_manager
+        .database()
+        .get_tags(subscriber.id.unwrap())
+    {
+        Ok(tags) => Ok(Json(ApiResponse::success(tags))),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(format!("Failed to get tags: {}", e))),
+        )),
+    }
+}
+
+/// GET /tags — list all tags with counts
+async fn list_tags(
+    State(state): State<ApiState>,
+) -> Result<Json<ApiResponse<Vec<TagInfo>>>, (StatusCode, Json<ApiResponse<()>>)> {
+    match state.newsletter_manager.database().get_all_tags() {
+        Ok(tags) => {
+            let tag_infos: Vec<TagInfo> = tags
+                .into_iter()
+                .map(|(tag, count)| TagInfo { tag, count })
+                .collect();
+            Ok(Json(ApiResponse::success(tag_infos)))
+        }
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(format!("Failed to list tags: {}", e))),
+        )),
+    }
+}
+
+// --- Bounce endpoints ---
+
+/// POST /webhooks/bounce — receive bounce notifications
+async fn handle_bounce_webhook(
+    State(state): State<ApiState>,
+    Json(payload): Json<BounceWebhookPayload>,
+) -> Result<Json<ApiResponse<()>>, (StatusCode, Json<ApiResponse<()>>)> {
+    let event = payload.to_event();
+
+    match state.newsletter_manager.database().record_bounce(
+        &event.email,
+        &event.bounce_type,
+        event.reason.as_deref(),
+    ) {
+        Ok(_) => Ok(Json(ApiResponse::success(()))),
+        Err(e) => {
+            eprintln!("Failed to record bounce: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!(
+                    "Failed to record bounce: {}",
+                    e
+                ))),
+            ))
+        }
+    }
+}
+
+/// GET /bounces?email={} — get bounce history
+async fn get_bounces(
+    State(state): State<ApiState>,
+    Query(params): Query<BounceQuery>,
+) -> Result<Json<ApiResponse<Vec<BounceRecord>>>, (StatusCode, Json<ApiResponse<()>>)> {
+    match state
+        .newsletter_manager
+        .database()
+        .get_bounces(&params.email)
+    {
+        Ok(bounces) => Ok(Json(ApiResponse::success(bounces))),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(format!("Failed to get bounces: {}", e))),
+        )),
+    }
+}
+
+/// Get the HMAC secret from the newsletter manager
+fn get_hmac_secret(_state: &ApiState) -> String {
+    std::env::var("NEWSLETTER_HMAC_SECRET").unwrap_or_else(|_| {
+        std::env::var("NEWSLETTER_SMTP_PASSWORD")
+            .map(|p| format!("blogr-newsletter-{}", p))
+            .unwrap_or_else(|_| "default-hmac-secret".to_string())
+    })
 }
 
 #[cfg(test)]

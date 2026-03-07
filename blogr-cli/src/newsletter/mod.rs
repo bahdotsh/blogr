@@ -16,6 +16,7 @@ pub mod migration;
 pub mod plugin;
 pub mod sender;
 pub mod ui;
+pub mod webhooks;
 
 pub use api::{ApiConfig, NewsletterApiServer};
 pub use composer::Newsletter;

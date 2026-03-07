@@ -262,6 +262,28 @@ pub struct NewsletterConfig {
     /// Plugin configurations
     #[serde(default)]
     pub plugins: Option<std::collections::HashMap<String, crate::newsletter::PluginConfig>>,
+    /// Send pipeline configuration
+    #[serde(default)]
+    pub send: Option<SendPipelineConfig>,
+    /// Base URL for the newsletter API (used for unsubscribe links)
+    pub api_base_url: Option<String>,
+    /// Whether to require double opt-in for new subscribers
+    #[serde(default)]
+    pub double_optin: bool,
+    /// URL for the confirmation page (used in double opt-in emails)
+    pub confirmation_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendPipelineConfig {
+    /// Emails per minute rate limit
+    pub emails_per_minute: Option<u32>,
+    /// Number of concurrent SMTP connections
+    pub concurrency: Option<usize>,
+    /// Batch size for processing subscribers
+    pub batch_size: Option<usize>,
+    /// Maximum retries for failed sends
+    pub max_retries: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,6 +318,10 @@ impl Default for NewsletterConfig {
             imap: None,
             smtp: None,
             plugins: None,
+            send: None,
+            api_base_url: None,
+            double_optin: false,
+            confirmation_url: None,
         }
     }
 }

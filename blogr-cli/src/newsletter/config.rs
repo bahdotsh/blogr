@@ -352,7 +352,7 @@ impl NewsletterManager {
         NewsletterComposer::new(theme, self.config.clone())
     }
 
-    /// Create a newsletter sender
+    /// Create a newsletter sender, applying send pipeline config from blogr.toml
     pub fn create_sender(&self, emails_per_minute: Option<u32>) -> Result<NewsletterSender> {
         let smtp_config = self.get_smtp_config()?
             .ok_or_else(|| anyhow::anyhow!(
@@ -360,10 +360,38 @@ impl NewsletterManager {
             ))?;
 
         let sender_name = self.config.newsletter.sender_name.clone();
-        let rate_limit = emails_per_minute.unwrap_or(100);
         let hmac_secret = self.get_hmac_secret()?;
 
-        NewsletterSender::new(smtp_config, sender_name, rate_limit, hmac_secret)
+        // Resolve rate limit: CLI arg > config > default
+        let send_cfg = self.config.newsletter.send.as_ref();
+        let rate_limit = emails_per_minute
+            .or_else(|| send_cfg.and_then(|c| c.emails_per_minute))
+            .unwrap_or(100);
+
+        let mut sender = NewsletterSender::new(smtp_config, sender_name, rate_limit, hmac_secret)?;
+
+        // Apply send pipeline config from blogr.toml
+        if let Some(cfg) = send_cfg {
+            let mut send_config = super::sender::SendConfig {
+                emails_per_minute: rate_limit,
+                ..Default::default()
+            };
+            if let Some(c) = cfg.concurrency {
+                send_config.concurrency = c;
+            }
+            if let Some(b) = cfg.batch_size {
+                send_config.batch_size = b;
+            }
+            if let Some(r) = cfg.max_retries {
+                send_config.max_retries = r;
+            }
+            sender = sender.with_config(send_config);
+        }
+
+        // Set API base URL for unsubscribe links
+        sender = sender.with_api_base_url(self.config.newsletter.api_base_url.clone());
+
+        Ok(sender)
     }
 
     /// Compose newsletter from latest blog post
@@ -382,10 +410,22 @@ impl NewsletterManager {
     }
 
     /// Send newsletter to all approved subscribers using the async queue-based sender
+    #[allow(dead_code)]
     pub async fn send_newsletter(
         &self,
         newsletter: &Newsletter,
         interactive: bool,
+    ) -> Result<super::sender::SendReport> {
+        self.send_newsletter_with_tag(newsletter, interactive, None)
+            .await
+    }
+
+    /// Send newsletter to subscribers filtered by optional tag
+    pub async fn send_newsletter_with_tag(
+        &self,
+        newsletter: &Newsletter,
+        interactive: bool,
+        tag: Option<&str>,
     ) -> Result<super::sender::SendReport> {
         let sender = self.create_sender(None)?;
 
@@ -396,8 +436,14 @@ impl NewsletterManager {
         };
 
         sender
-            .send_with_queue(newsletter, &self.database, &password, None)
+            .send_with_queue(newsletter, &self.database, &password, None, None, tag)
             .await
+    }
+
+    /// Get access to the config
+    #[allow(dead_code)]
+    pub fn config(&self) -> &Config {
+        &self.config
     }
 
     /// Send test newsletter
