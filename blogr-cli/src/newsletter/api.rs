@@ -239,10 +239,12 @@ async fn auth_middleware(req: Request, next: Next, api_key: Arc<String>) -> Resp
 
 /// Basic email format validation
 fn is_valid_email(email: &str) -> bool {
-    email.contains('@')
-        && email.contains('.')
-        && !email.starts_with('@')
-        && !email.ends_with('@')
+    let parts: Vec<&str> = email.split('@').collect();
+    parts.len() == 2
+        && !parts[0].is_empty()
+        && parts[1].contains('.')
+        && !parts[1].starts_with('.')
+        && !parts[1].ends_with('.')
         && email.len() > 5
         && email.len() < 255
         && !email.contains(' ')
@@ -567,6 +569,12 @@ mod tests {
         assert!(!is_valid_email("has space@example.com"));
         assert!(!is_valid_email(""));
         assert!(!is_valid_email("ab@c"));
+        // Multiple @ signs must be rejected
+        assert!(!is_valid_email("a@@b.com"));
+        assert!(!is_valid_email("a@b@c.com"));
+        // Domain must not start or end with dot
+        assert!(!is_valid_email("user@.example.com"));
+        assert!(!is_valid_email("user@example."));
     }
 
     #[tokio::test]
