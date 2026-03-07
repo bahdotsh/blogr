@@ -76,6 +76,7 @@ cargo install --path blogr-cli
 - Multiple themes: 7 built-in themes for blogs and personal sites
 - Full-text search with MiniSearch integration
 - Syntax highlighting for code blocks
+- MathJax support for LaTeX math expressions (opt-in)
 - RSS/Atom feeds (blog mode)
 - SEO-friendly output
 
@@ -185,6 +186,9 @@ repository = "blog"
 
 [site]
 site_type = "blog"  # or "personal" for portfolio sites
+
+[math]
+enabled = true  # Enable MathJax for LaTeX math rendering
 ```
 
 For detailed configuration options, see the [Configuration Guide](docs/CONFIGURATION.md).
@@ -234,6 +238,22 @@ Blogr includes a powerful client-side full-text search feature powered by MiniSe
 - Lazy loading for better performance
 
 For detailed search configuration and troubleshooting, see the [Search Feature Guide](docs/SEARCH.md).
+
+## Math Support
+
+Blogr supports LaTeX math expressions via MathJax 3. Math rendering is opt-in — add the following to your `blogr.toml`:
+
+```toml
+[math]
+enabled = true
+```
+
+Use standard LaTeX delimiters in your Markdown:
+
+- **Inline math**: `$E = mc^{2}$` renders as inline math
+- **Display math**: `$$\sum_{i=1}^{n} i$$` renders as a centered block equation
+
+Blogr's markdown parser converts `$...$` to `\(...\)` and `$$...$$` to `\[...\]`, which MathJax then renders client-side.
 
 ## Themes
 

@@ -50,7 +50,7 @@ pub struct MathConfig {
 }
 
 fn default_math_enabled() -> bool {
-    true
+    false
 }
 
 impl Default for MathConfig {
