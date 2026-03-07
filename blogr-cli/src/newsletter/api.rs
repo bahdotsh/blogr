@@ -15,6 +15,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -217,7 +218,7 @@ async fn auth_middleware(req: Request, next: Next, api_key: Arc<String>) -> Resp
         Some(header)
             if header
                 .strip_prefix("Bearer ")
-                .is_some_and(|token| token == api_key.as_str()) =>
+                .is_some_and(|token| bool::from(token.as_bytes().ct_eq(api_key.as_bytes()))) =>
         {
             next.run(req).await
         }
@@ -299,10 +300,7 @@ async fn create_subscriber(
     if !is_valid_email(&request.email) {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ApiResponse::error(format!(
-                "Invalid email format: {}",
-                request.email
-            ))),
+            Json(ApiResponse::error("Invalid email format".to_string())),
         ));
     }
 
@@ -339,7 +337,7 @@ async fn create_subscriber(
                     eprintln!("Failed to fetch created subscriber: {}", e);
                     Err((
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ApiResponse::error(format!("Database error: {}", e))),
+                        Json(ApiResponse::error("Internal database error".to_string())),
                     ))
                 }
             }
@@ -386,7 +384,7 @@ async fn get_subscriber(
             eprintln!("Failed to get subscriber: {}", e);
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!("Database error: {}", e))),
+                Json(ApiResponse::error("Internal database error".to_string())),
             ))
         }
     }
@@ -417,7 +415,7 @@ async fn update_subscriber(
             eprintln!("Failed to get subscriber: {}", e);
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!("Database error: {}", e))),
+                Json(ApiResponse::error("Internal database error".to_string())),
             ));
         }
     };

@@ -246,6 +246,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "strum 0.27.2",
+ "subtle",
  "syntect",
  "tempfile",
  "tera",

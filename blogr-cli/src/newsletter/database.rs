@@ -276,10 +276,14 @@ impl NewsletterDatabase {
         query.push_str(" ORDER BY subscribed_at DESC");
 
         if let Some(limit) = limit {
-            query.push_str(&format!(" LIMIT {}", limit));
+            let idx = params.len() + 1;
+            query.push_str(&format!(" LIMIT ?{}", idx));
+            params.push(limit.to_string());
         }
         if let Some(offset) = offset {
-            query.push_str(&format!(" OFFSET {}", offset));
+            let idx = params.len() + 1;
+            query.push_str(&format!(" OFFSET ?{}", idx));
+            params.push(offset.to_string());
         }
 
         let mut stmt = conn.prepare(&query)?;
