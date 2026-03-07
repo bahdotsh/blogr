@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use anyhow::Result;
 use pulldown_cmark::{html, CodeBlockKind, Event, Options, Parser, Tag};
 use syntect::easy::HighlightLines;
@@ -5,6 +7,9 @@ use syntect::highlighting::ThemeSet;
 use syntect::html::{styled_line_to_highlighted_html, IncludeBackground};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
+
+static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
 
 /// Render markdown to HTML with syntax highlighting
 pub fn render_markdown(markdown: &str) -> Result<String> {
@@ -18,6 +23,7 @@ pub fn render_markdown(markdown: &str) -> Result<String> {
 
     // Process events with stateful code block tracking for syntax highlighting
     let mut current_lang: Option<String> = None;
+    let mut code_buf = String::new();
     let mut events: Vec<Event> = Vec::new();
 
     for event in parser {
@@ -33,24 +39,26 @@ pub fn render_markdown(markdown: &str) -> Result<String> {
                     String::new()
                 };
                 current_lang = Some(lang);
+                code_buf.clear();
                 events.push(Event::Html(
                     format!("<pre class=\"highlight\"><code{}>", class_attr).into(),
                 ));
             }
             Event::End(Tag::CodeBlock(_)) => {
-                current_lang = None;
+                let lang = current_lang.take().unwrap_or_default();
+                if !lang.is_empty() && !code_buf.is_empty() {
+                    match highlight_code(&code_buf, &lang) {
+                        Ok(highlighted) => events.push(Event::Html(highlighted.into())),
+                        Err(_) => events.push(Event::Html(html_escape(&code_buf).into())),
+                    }
+                } else if !code_buf.is_empty() {
+                    events.push(Event::Html(html_escape(&code_buf).into()));
+                }
+                code_buf.clear();
                 events.push(Event::Html("</code></pre>".into()));
             }
             Event::Text(text) if current_lang.is_some() => {
-                let lang = current_lang.as_deref().unwrap();
-                if !lang.is_empty() {
-                    match highlight_code(&text, lang) {
-                        Ok(highlighted) => events.push(Event::Html(highlighted.into())),
-                        Err(_) => events.push(Event::Html(html_escape(&text).into())),
-                    }
-                } else {
-                    events.push(Event::Html(html_escape(&text).into()));
-                }
+                code_buf.push_str(&text);
             }
             _ => events.push(event),
         }
@@ -64,19 +72,16 @@ pub fn render_markdown(markdown: &str) -> Result<String> {
 
 /// Highlight code using syntect, returning only `<span>` elements (no `<pre>` wrapper)
 fn highlight_code(code: &str, language: &str) -> Result<String> {
-    let syntax_set = SyntaxSet::load_defaults_newlines();
-    let theme_set = ThemeSet::load_defaults();
-
-    let syntax = syntax_set
+    let syntax = SYNTAX_SET
         .find_syntax_by_token(language)
-        .or_else(|| syntax_set.find_syntax_by_extension(language))
-        .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
+        .or_else(|| SYNTAX_SET.find_syntax_by_extension(language))
+        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
 
-    let theme = &theme_set.themes["base16-ocean.dark"];
+    let theme = &THEME_SET.themes["base16-ocean.dark"];
     let mut highlighter = HighlightLines::new(syntax, theme);
     let mut output = String::new();
     for line in LinesWithEndings::from(code) {
-        let ranges = highlighter.highlight_line(line, &syntax_set)?;
+        let ranges = highlighter.highlight_line(line, &SYNTAX_SET)?;
         let html = styled_line_to_highlighted_html(&ranges[..], IncludeBackground::No)?;
         output.push_str(&html);
     }
@@ -179,5 +184,33 @@ mod tests {
         let html = render_markdown(md).unwrap();
         assert!(html.contains("<strong>world</strong>"));
         assert!(!html.contains("<pre"));
+    }
+
+    #[test]
+    fn test_code_block_with_html_entities() {
+        let md = "```html\n<div class=\"test\">&amp;</div>\n```";
+        let html = render_markdown(md).unwrap();
+        // The raw < and & from the code must not appear unescaped
+        assert!(!html.contains("&amp;</div>"));
+        assert!(html.contains("<pre class=\"highlight\">"));
+    }
+
+    #[test]
+    fn test_multiple_code_blocks_in_one_document() {
+        let md = "```rust\nfn a() {}\n```\n\nSome text.\n\n```python\ndef b(): pass\n```";
+        let html = render_markdown(md).unwrap();
+        assert!(html.contains("language-rust"));
+        assert!(html.contains("language-python"));
+        // Both blocks should be highlighted
+        assert_eq!(html.matches("<pre class=\"highlight\">").count(), 2);
+        assert_eq!(html.matches("</code></pre>").count(), 2);
+    }
+
+    #[test]
+    fn test_special_language_names() {
+        let md = "```c++\nint main() {}\n```";
+        let html = render_markdown(md).unwrap();
+        assert!(html.contains("<pre class=\"highlight\">"));
+        assert!(html.contains("</code></pre>"));
     }
 }
