@@ -26,12 +26,23 @@ const LIVE_RELOAD_SCRIPT: &str = r#"<script>
   };
   source.onerror = function() {
     source.close();
-    setTimeout(function() {
-      var retry = new EventSource('/__livereload');
-      retry.onmessage = function(e) {
-        if (e.data === 'reload') window.location.reload();
-      };
-    }, 1000);
+    var attempts = 0;
+    var maxAttempts = 10;
+    function tryReconnect() {
+      if (attempts >= maxAttempts) return;
+      attempts++;
+      setTimeout(function() {
+        var retry = new EventSource('/__livereload');
+        retry.onmessage = function(e) {
+          if (e.data === 'reload') window.location.reload();
+        };
+        retry.onerror = function() {
+          retry.close();
+          tryReconnect();
+        };
+      }, 1000 * Math.min(attempts, 5));
+    }
+    tryReconnect();
   };
 })();
 </script>"#;
@@ -265,4 +276,76 @@ fn start_file_watcher(
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{header, Response, StatusCode};
+
+    async fn make_html_response(body: &str) -> Response<Body> {
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    async fn response_body_string(response: Response<Body>) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), 10 * 1024 * 1024)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_inject_live_reload_before_body_close() {
+        let html = "<html><body><p>Hello</p></body></html>";
+        let response = make_html_response(html).await;
+        let result = inject_live_reload(response).await;
+        let body = response_body_string(result).await;
+
+        assert!(body.contains(LIVE_RELOAD_SCRIPT));
+        assert!(body.contains(&format!("{}</body>", LIVE_RELOAD_SCRIPT)));
+    }
+
+    #[tokio::test]
+    async fn test_inject_live_reload_no_body_tag() {
+        let html = "<html><p>No body tag</p></html>";
+        let response = make_html_response(html).await;
+        let result = inject_live_reload(response).await;
+        let body = response_body_string(result).await;
+
+        assert!(body.contains(LIVE_RELOAD_SCRIPT));
+        assert!(body.ends_with(LIVE_RELOAD_SCRIPT));
+    }
+
+    #[tokio::test]
+    async fn test_inject_live_reload_skips_non_html() {
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{\"key\": \"value\"}"))
+            .unwrap();
+        let result = inject_live_reload(response).await;
+        let body = response_body_string(result).await;
+
+        assert!(!body.contains(LIVE_RELOAD_SCRIPT));
+        assert_eq!(body, "{\"key\": \"value\"}");
+    }
+
+    #[tokio::test]
+    async fn test_inject_live_reload_removes_content_length() {
+        let html = "<html><body></body></html>";
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/html")
+            .header(header::CONTENT_LENGTH, html.len().to_string())
+            .body(Body::from(html))
+            .unwrap();
+        let result = inject_live_reload(response).await;
+
+        assert!(result.headers().get(header::CONTENT_LENGTH).is_none());
+    }
 }
