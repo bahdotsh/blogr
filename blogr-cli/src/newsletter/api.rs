@@ -381,9 +381,10 @@ async fn handle_confirm(
                 .replace('&', "&amp;")
                 .replace('<', "&lt;")
                 .replace('>', "&gt;")
-                .replace('"', "&quot;");
+                .replace('"', "&quot;")
+                .replace('\'', "&#x27;");
             Html(format!(
-                "<html><body><h2>Confirmed!</h2><p>Your email address ({}) has been confirmed. You will now receive our newsletter.</p></body></html>",
+                "<html><body><h2>Confirmed!</h2><p>Your email address ({}) has been confirmed. You are now subscribed to our newsletter.</p></body></html>",
                 escaped_email
             ))
         }
@@ -492,7 +493,7 @@ async fn create_subscriber(
         .add_subscriber(&subscriber)
     {
         Ok(id) => {
-            // If double opt-in, create confirmation token and send email
+            // If double opt-in, create confirmation token and send confirmation email
             if state.config.newsletter.double_optin {
                 let token = uuid::Uuid::new_v4().to_string();
                 if let Err(e) = state
@@ -501,10 +502,52 @@ async fn create_subscriber(
                     .create_confirmation_token(id, &token, 48)
                 {
                     eprintln!("Failed to create confirmation token: {}", e);
+                } else {
+                    // Determine the confirmation URL base
+                    let confirm_base =
+                        state
+                            .config
+                            .newsletter
+                            .confirmation_url
+                            .clone()
+                            .or_else(|| {
+                                state
+                                    .config
+                                    .newsletter
+                                    .api_base_url
+                                    .as_ref()
+                                    .map(|u| format!("{}/confirm", u.trim_end_matches('/')))
+                            });
+
+                    if let Some(confirm_url) = confirm_base {
+                        let manager = state.newsletter_manager.clone();
+                        let email_addr = request.email.clone();
+                        // Send confirmation email in a background task
+                        tokio::task::spawn_blocking(move || match manager.create_sender(None) {
+                            Ok(sender_instance) => match manager.get_smtp_password() {
+                                Ok(password) => {
+                                    if let Err(e) = sender_instance.send_confirmation_email(
+                                        &email_addr,
+                                        &token,
+                                        &confirm_url,
+                                        &password,
+                                    ) {
+                                        eprintln!("Failed to send confirmation email: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                            "SMTP password not configured, cannot send confirmation email: {}",
+                                            e
+                                        );
+                                }
+                            },
+                            Err(e) => {
+                                eprintln!("Failed to create sender for confirmation email: {}", e);
+                            }
+                        });
+                    }
                 }
-                // Note: sending the confirmation email would require SMTP credentials
-                // which are not available in the API context. The token is stored for
-                // later retrieval or the confirmation URL can be returned.
             }
 
             match state
@@ -892,14 +935,10 @@ async fn get_bounces(
     }
 }
 
-/// Get the HMAC secret from environment variables.
-/// Returns an error if neither NEWSLETTER_HMAC_SECRET nor NEWSLETTER_SMTP_PASSWORD is set.
-fn get_hmac_secret(_state: &ApiState) -> Result<String, StatusCode> {
-    std::env::var("NEWSLETTER_HMAC_SECRET").or_else(|_| {
-        std::env::var("NEWSLETTER_SMTP_PASSWORD")
-            .map(|p| format!("blogr-newsletter-{}", p))
-    }).map_err(|_| {
-        eprintln!("HMAC secret not configured: set NEWSLETTER_HMAC_SECRET or NEWSLETTER_SMTP_PASSWORD");
+/// Get the HMAC secret via the NewsletterManager (single source of truth).
+fn get_hmac_secret(state: &ApiState) -> Result<String, StatusCode> {
+    state.newsletter_manager.get_hmac_secret().map_err(|e| {
+        eprintln!("HMAC secret not configured: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })
 }

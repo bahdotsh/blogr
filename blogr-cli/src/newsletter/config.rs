@@ -110,7 +110,7 @@ impl NewsletterManager {
     }
 
     /// Get HMAC secret for unsubscribe tokens, from env or derive from SMTP password
-    fn get_hmac_secret(&self) -> Result<String> {
+    pub(crate) fn get_hmac_secret(&self) -> Result<String> {
         match env::var("NEWSLETTER_HMAC_SECRET") {
             Ok(secret) => Ok(secret),
             Err(_) => {

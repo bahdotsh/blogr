@@ -2,8 +2,9 @@
 //!
 //! This module handles sending newsletters via SMTP with:
 //! - Async concurrent sending with configurable parallelism
-//! - Channel-based rate limiting (no mutex contention)
+//! - Channel-based rate limiting (single consumer in batch loop)
 //! - Send queue for crash recovery and resume
+//! - Shared SMTP transport across all concurrent tasks
 //! - Batch database writes for tracking
 //! - Capped error collection for memory safety
 //! - List-Unsubscribe headers for Gmail/Yahoo compliance
@@ -126,30 +127,31 @@ impl SendReport {
     }
 }
 
-/// Channel-based rate limiter that distributes tokens without mutex contention.
-/// A single background task ticks at the configured rate and sends tokens
-/// via an mpsc channel. Send tasks receive tokens from the channel.
+/// Channel-based rate limiter that distributes tokens at a fixed rate.
+/// A background task ticks at the configured rate and sends tokens via an mpsc
+/// channel. The owner calls `acquire()` to receive a token before each send.
+/// When `emails_per_minute` is 0, rate limiting is disabled (unlimited).
 struct ChannelRateLimiter {
-    receiver: tokio::sync::mpsc::Receiver<()>,
-    _distributor: tokio::task::JoinHandle<()>,
+    receiver: Option<tokio::sync::mpsc::Receiver<()>>,
+    _distributor: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ChannelRateLimiter {
     fn new(emails_per_minute: u32) -> Self {
-        let interval_micros = if emails_per_minute == 0 {
-            0
-        } else {
-            60_000_000u64 / emails_per_minute as u64
-        };
+        if emails_per_minute == 0 {
+            return Self {
+                receiver: None,
+                _distributor: None,
+            };
+        }
+
+        let interval_micros = 60_000_000u64 / emails_per_minute as u64;
 
         // Buffer up to 1 second worth of tokens for burst capacity
         let buffer_size = (emails_per_minute as usize / 60).max(1);
         let (tx, rx) = tokio::sync::mpsc::channel(buffer_size);
 
         let distributor = tokio::spawn(async move {
-            if interval_micros == 0 {
-                return;
-            }
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_micros(interval_micros));
             loop {
@@ -161,14 +163,16 @@ impl ChannelRateLimiter {
         });
 
         Self {
-            receiver: rx,
-            _distributor: distributor,
+            receiver: Some(rx),
+            _distributor: Some(distributor),
         }
     }
 
     async fn acquire(&mut self) {
-        // Receive a token; blocks until one is available
-        let _ = self.receiver.recv().await;
+        if let Some(ref mut rx) = self.receiver {
+            let _ = rx.recv().await;
+        }
+        // If None, rate limiting is disabled — return immediately
     }
 }
 
@@ -307,10 +311,9 @@ impl NewsletterSender {
             smtp_password,
         )?);
 
-        // Channel-based rate limiter — single distributor task, no mutex contention
-        let rate_limiter = Arc::new(tokio::sync::Mutex::new(ChannelRateLimiter::new(
-            self.send_config.emails_per_minute,
-        )));
+        // Rate limiter owned by the batch loop — no Mutex needed since only the
+        // main loop consumes tokens before spawning each task.
+        let mut rate_limiter = ChannelRateLimiter::new(self.send_config.emails_per_minute);
         let semaphore = Arc::new(Semaphore::new(self.send_config.concurrency));
         let progress_callback = progress_callback.map(Arc::new);
         let processed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -349,9 +352,11 @@ impl NewsletterSender {
                     continue;
                 }
 
+                // Rate limit in the batch loop (single consumer, no mutex needed)
+                rate_limiter.acquire().await;
+
                 let permit = semaphore.clone().acquire_owned().await?;
                 let newsletter = Arc::clone(&newsletter);
-                let rate_limiter = Arc::clone(&rate_limiter);
                 let transport = Arc::clone(&transport);
                 let from_address = from_address.clone();
                 let hmac_secret = hmac_secret.clone();
@@ -362,9 +367,6 @@ impl NewsletterSender {
                 let task_total = total;
 
                 let task = tokio::spawn(async move {
-                    // Rate limit via channel (no mutex contention on hot path)
-                    rate_limiter.lock().await.acquire().await;
-
                     let result = send_single_email_async(
                         &transport,
                         &from_address,
