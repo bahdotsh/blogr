@@ -197,6 +197,24 @@ impl MarkdownRenderer {
                 Event::Code(code) => {
                     current_line.push(Span::styled(code.to_string(), theme.markdown_code_style()));
                 }
+                Event::InlineMath(text) => {
+                    current_line.push(Span::styled(
+                        format!("${}$", text),
+                        theme.markdown_code_style(),
+                    ));
+                }
+                Event::DisplayMath(text) => {
+                    if !current_line.is_empty() {
+                        lines.push(Line::from(current_line));
+                        current_line = Vec::new();
+                    }
+                    current_line.push(Span::styled(
+                        format!("$${}$$", text),
+                        theme.markdown_code_style(),
+                    ));
+                    lines.push(Line::from(current_line));
+                    current_line = Vec::new();
+                }
                 Event::Html(html) => {
                     // For now, just display HTML as-is
                     current_line.push(Span::styled(html.to_string(), theme.markdown_html_style()));

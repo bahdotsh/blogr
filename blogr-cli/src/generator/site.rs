@@ -341,7 +341,7 @@ Thank you!`);
             context.insert("post", post);
 
             // Convert markdown to HTML
-            let html_content = crate::generator::markdown::render_markdown(&post.content)?;
+            let html_content = crate::generator::markdown::render_markdown(&post.content, self.config.math.enabled)?;
             context.insert("content", &html_content);
 
             // Calculate reading time (average 200 words per minute)
@@ -492,7 +492,7 @@ Thank you!`);
 
         for post in &initial_posts {
             // Convert markdown to HTML for each post
-            let html_content = crate::generator::markdown::render_markdown(&post.content)?;
+            let html_content = crate::generator::markdown::render_markdown(&post.content, self.config.math.enabled)?;
 
             // Calculate reading time (average 200 words per minute)
             let word_count = post.content.split_whitespace().count();
@@ -542,7 +542,7 @@ Thank you!`);
         let mut posts_with_content = Vec::new();
         for post in posts {
             // Convert markdown to HTML for each post
-            let html_content = crate::generator::markdown::render_markdown(&post.content)?;
+            let html_content = crate::generator::markdown::render_markdown(&post.content, self.config.math.enabled)?;
 
             // Calculate reading time (average 200 words per minute)
             let word_count = post.content.split_whitespace().count();
@@ -620,7 +620,7 @@ Thank you!`);
             let mut posts_with_content = Vec::new();
             for post in tag_posts {
                 // Convert markdown to HTML for each post
-                let html_content = crate::generator::markdown::render_markdown(&post.content)?;
+                let html_content = crate::generator::markdown::render_markdown(&post.content, self.config.math.enabled)?;
 
                 // Calculate reading time (average 200 words per minute)
                 let word_count = post.content.split_whitespace().count();
@@ -687,7 +687,7 @@ Thank you!`);
 
         for post in recent_posts {
             // Convert markdown to HTML for RSS content
-            let html_content = crate::generator::markdown::render_markdown(&post.content)?;
+            let html_content = crate::generator::markdown::render_markdown(&post.content, self.config.math.enabled)?;
 
             // Create RSS item
             let post_url = format!(
@@ -763,7 +763,7 @@ Thank you!`);
 
         for post in recent_posts {
             // Convert markdown to HTML for Atom content
-            let html_content = crate::generator::markdown::render_markdown(&post.content)?;
+            let html_content = crate::generator::markdown::render_markdown(&post.content, self.config.math.enabled)?;
 
             // Create Atom entry
             let post_url = format!(
@@ -1026,7 +1026,7 @@ Thank you!`);
             let mut posts_with_content = Vec::new();
             for post in page_posts {
                 // Convert markdown to HTML for each post
-                let html_content = crate::generator::markdown::render_markdown(&post.content)?;
+                let html_content = crate::generator::markdown::render_markdown(&post.content, self.config.math.enabled)?;
 
                 // Calculate reading time (average 200 words per minute)
                 let word_count = post.content.split_whitespace().count();
