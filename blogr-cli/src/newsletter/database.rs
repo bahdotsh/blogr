@@ -232,7 +232,7 @@ impl NewsletterDatabase {
             CREATE TABLE IF NOT EXISTS subscribers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 email TEXT UNIQUE NOT NULL,
-                status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'declined', 'unconfirmed')),
+                status TEXT NOT NULL,
                 subscribed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 approved_at DATETIME,
                 declined_at DATETIME,
@@ -353,6 +353,49 @@ impl NewsletterDatabase {
             let _ = conn.execute_batch(
                 "ALTER TABLE subscribers ADD COLUMN soft_bounce_count INTEGER NOT NULL DEFAULT 0",
             );
+        }
+
+        // Migration: remove CHECK constraint on status column for existing databases.
+        // Previous schema used CHECK (status IN ('pending', 'approved', 'declined')) which
+        // rejects 'unconfirmed'. Since we add missing columns above first, all columns exist
+        // by the time we get here. Validation is enforced at the application level.
+        let table_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='subscribers'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+
+        if table_sql.contains("CHECK") {
+            let migration_sql = "
+                CREATE TABLE subscribers_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT UNIQUE NOT NULL,
+                    status TEXT NOT NULL,
+                    subscribed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    approved_at DATETIME,
+                    declined_at DATETIME,
+                    source_email_id TEXT,
+                    notes TEXT,
+                    soft_bounce_count INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO subscribers_new (id, email, status, subscribed_at, approved_at, declined_at, source_email_id, notes, soft_bounce_count)
+                    SELECT id, email, status, subscribed_at, approved_at, declined_at, source_email_id, notes, soft_bounce_count FROM subscribers;
+                DROP TABLE subscribers;
+                ALTER TABLE subscribers_new RENAME TO subscribers;
+                CREATE INDEX IF NOT EXISTS idx_subscribers_status ON subscribers(status);
+                CREATE INDEX IF NOT EXISTS idx_subscribers_email ON subscribers(email);
+                CREATE INDEX IF NOT EXISTS idx_subscribers_subscribed_at ON subscribers(subscribed_at);
+            ";
+
+            if let Err(e) = conn.execute_batch(migration_sql) {
+                eprintln!(
+                    "Warning: failed to migrate subscribers table CHECK constraint: {}. \
+                     This is non-fatal but 'unconfirmed' status may not work on this database.",
+                    e
+                );
+            }
         }
 
         Ok(())
@@ -1131,10 +1174,11 @@ impl NewsletterDatabase {
                     "UPDATE confirmation_tokens SET used_at = datetime('now') WHERE id = ?1",
                     params![token_id],
                 )?;
-                // Promote subscriber from Unconfirmed to Pending
+                // Promote subscriber from Unconfirmed to Approved (double opt-in confirmed)
+                let now = Utc::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
                 conn.execute(
-                    "UPDATE subscribers SET status = 'pending' WHERE id = ?1 AND status = 'unconfirmed'",
-                    params![subscriber_id],
+                    "UPDATE subscribers SET status = 'approved', approved_at = ?1 WHERE id = ?2 AND status = 'unconfirmed'",
+                    params![now, subscriber_id],
                 )?;
                 Ok(Some(email))
             }
@@ -1523,9 +1567,10 @@ mod tests {
         let email = db.verify_confirmation_token("test-token-123")?;
         assert_eq!(email, Some("confirm@example.com".to_string()));
 
-        // Subscriber should now be pending
+        // Subscriber should now be approved (double opt-in confirmed)
         let updated = db.get_subscriber_by_email("confirm@example.com")?.unwrap();
-        assert_eq!(updated.status, SubscriberStatus::Pending);
+        assert_eq!(updated.status, SubscriberStatus::Approved);
+        assert!(updated.approved_at.is_some());
 
         // Token should not be usable again
         let reuse = db.verify_confirmation_token("test-token-123")?;
