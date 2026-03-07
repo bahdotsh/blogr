@@ -72,9 +72,7 @@ pub fn render_markdown(markdown: &str, math_enabled: bool) -> Result<String> {
                 ));
             }
             Event::DisplayMath(text) => {
-                events.push(Event::Html(
-                    format!("\\[{}\\]", html_escape(&text)).into(),
-                ));
+                events.push(Event::Html(format!("\\[{}\\]", html_escape(&text)).into()));
             }
             _ => events.push(event),
         }
