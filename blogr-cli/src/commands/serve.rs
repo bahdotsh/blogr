@@ -59,12 +59,7 @@ pub async fn handle_serve(port: u16, host: String, drafts: bool, open: bool) -> 
     Console::info("Building site...");
 
     let config = project.load_config()?;
-    let output_dir = config
-        .build
-        .output_dir
-        .as_ref()
-        .map(|p| project.root.join(p))
-        .unwrap_or_else(|| project.root.join("_site"));
+    let output_dir = config.build.resolve_output_dir(&project.root);
 
     let auto_reload = config.dev.auto_reload;
 
@@ -151,7 +146,10 @@ async fn inject_live_reload(response: Response) -> Response {
     let (mut parts, body) = response.into_parts();
     let bytes = match axum::body::to_bytes(body, 10 * 1024 * 1024).await {
         Ok(b) => b,
-        Err(_) => return Response::from_parts(parts, Body::empty()),
+        Err(_) => {
+            Console::warn("Response body too large for live reload injection");
+            return Response::from_parts(parts, Body::empty());
+        }
     };
     // Remove Content-Length since we're changing the body size
     parts.headers.remove(header::CONTENT_LENGTH);
@@ -262,12 +260,7 @@ fn start_file_watcher(
                     Console::info("File changed, rebuilding...");
                     match project.load_config() {
                         Ok(config) => {
-                            let out = config
-                                .build
-                                .output_dir
-                                .as_ref()
-                                .map(|p| project.root.join(p))
-                                .unwrap_or_else(|| project.root.join("_site"));
+                            let out = config.build.resolve_output_dir(&project.root);
                             match SiteBuilder::new(project, Some(out), drafts, false) {
                                 Ok(builder) => match builder.build() {
                                     Ok(()) => {

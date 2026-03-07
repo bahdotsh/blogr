@@ -103,6 +103,15 @@ pub struct BuildConfig {
     pub future_posts: bool,
 }
 
+impl BuildConfig {
+    pub fn resolve_output_dir(&self, project_root: &std::path::Path) -> std::path::PathBuf {
+        self.output_dir
+            .as_ref()
+            .map(|p| project_root.join(p))
+            .unwrap_or_else(|| project_root.join("_site"))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DevConfig {
     #[serde(default = "default_port")]
