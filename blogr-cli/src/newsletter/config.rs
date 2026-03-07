@@ -110,16 +110,24 @@ impl NewsletterManager {
     }
 
     /// Get HMAC secret for unsubscribe tokens from environment.
-    /// Falls back to SMTP password with a loud warning for development convenience,
-    /// but this should be explicitly configured in production.
+    /// When `api_base_url` is configured (production), a dedicated secret is required.
+    /// For local development without `api_base_url`, falls back to SMTP password
+    /// with a warning.
     pub fn get_hmac_secret(&self) -> Result<String> {
         match env::var("NEWSLETTER_HMAC_SECRET") {
             Ok(secret) if !secret.is_empty() => Ok(secret),
             _ => {
+                // In production (api_base_url set), require a dedicated secret
+                if self.config.newsletter.api_base_url.is_some() {
+                    return Err(anyhow::anyhow!(
+                        "NEWSLETTER_HMAC_SECRET must be set when api_base_url is configured. \
+                         Generate a random secret (e.g., `openssl rand -hex 32`) and set it \
+                         as the NEWSLETTER_HMAC_SECRET environment variable."
+                    ));
+                }
                 eprintln!(
                     "WARNING: NEWSLETTER_HMAC_SECRET not set. Deriving from SMTP password. \
-                     Set a dedicated NEWSLETTER_HMAC_SECRET for production use — compromising \
-                     the SMTP password would also compromise all unsubscribe tokens."
+                     Set a dedicated NEWSLETTER_HMAC_SECRET for production use."
                 );
                 self.get_smtp_password()
                     .map(|p| format!("blogr-newsletter-{}", p))

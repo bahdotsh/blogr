@@ -51,6 +51,9 @@ impl Default for ApiConfig {
 /// Maximum concurrent background confirmation email sends.
 const MAX_CONFIRMATION_TASKS: usize = 10;
 
+/// Maximum page size for list/export endpoints to prevent OOM on large databases.
+const MAX_PAGE_SIZE: usize = 1000;
+
 /// API server application state
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -174,9 +177,7 @@ impl NewsletterApiServer {
             newsletter_manager: Arc::new(newsletter_manager),
             config: Arc::new(config),
             api_config: Arc::new(api_config),
-            confirmation_semaphore: Arc::new(tokio::sync::Semaphore::new(
-                MAX_CONFIRMATION_TASKS,
-            )),
+            confirmation_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONFIRMATION_TASKS)),
         };
 
         Self { state }
@@ -263,6 +264,11 @@ impl NewsletterApiServer {
                 let key = Arc::clone(&key);
                 auth_middleware(req, next, key)
             }));
+        } else {
+            eprintln!(
+                "WARNING: Newsletter API starting without authentication. \
+                 Set newsletter.api_key in blogr.toml or NEWSLETTER_API_KEY env var to secure endpoints."
+            );
         }
 
         let mut app = public_routes.merge(protected_routes).with_state(self.state);
@@ -294,28 +300,49 @@ async fn auth_middleware(req: Request, next: Next, api_key: Arc<String>) -> Resp
             let body = serde_json::to_string(&ApiResponse::<()>::error(
                 "Unauthorized: invalid or missing API key".to_string(),
             ))
-            .unwrap_or_default();
+            .unwrap_or_else(|_| r#"{"success":false,"error":"Unauthorized"}"#.to_string());
 
             Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(body))
-                .unwrap()
+                .unwrap_or_else(|_| Response::new(axum::body::Body::from("Unauthorized")))
         }
     }
 }
 
-/// Basic email format validation
+/// Email format validation.
+/// Checks structure per RFC 5321 basics: local@domain, reasonable lengths,
+/// no consecutive dots, no leading/trailing dots, no whitespace.
 fn is_valid_email(email: &str) -> bool {
     let parts: Vec<&str> = email.split('@').collect();
-    parts.len() == 2
-        && !parts[0].is_empty()
-        && parts[1].contains('.')
-        && !parts[1].starts_with('.')
-        && !parts[1].ends_with('.')
-        && email.len() > 5
-        && email.len() < 255
-        && !email.contains(' ')
+    if parts.len() != 2 {
+        return false;
+    }
+    let local = parts[0];
+    let domain = parts[1];
+
+    // Overall length (RFC 5321: 254 max for addr, local max 64)
+    if email.len() < 5 || email.len() > 254 || local.len() > 64 {
+        return false;
+    }
+
+    // Local part checks
+    if local.is_empty()
+        || local.starts_with('.')
+        || local.ends_with('.')
+        || local.contains("..")
+        || email.contains(' ')
+    {
+        return false;
+    }
+
+    // Domain checks
+    domain.contains('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && !domain.contains("..")
+        && domain.len() >= 3
 }
 
 /// Health check endpoint
@@ -432,22 +459,23 @@ async fn list_subscribers(
     State(state): State<ApiState>,
     Query(params): Query<SubscriberQuery>,
 ) -> Result<Json<ApiResponse<Vec<Subscriber>>>, (StatusCode, Json<ApiResponse<()>>)> {
+    // Cap the page size to prevent OOM on large databases
+    let limit = Some(params.limit.unwrap_or(MAX_PAGE_SIZE).min(MAX_PAGE_SIZE));
+    let offset = params.offset;
+
     // If tag filter is provided, use tag-based query
     if let Some(ref tag) = params.tag {
         match state
             .newsletter_manager
             .database()
-            .get_subscribers_by_tag(tag)
+            .get_subscribers_by_tag_paginated(tag, limit, offset)
         {
             Ok(subscribers) => return Ok(Json(ApiResponse::success(subscribers))),
             Err(e) => {
                 eprintln!("Failed to list subscribers by tag: {}", e);
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiResponse::error(format!(
-                        "Failed to list subscribers: {}",
-                        e
-                    ))),
+                    Json(ApiResponse::error("Failed to list subscribers".to_string())),
                 ));
             }
         }
@@ -467,17 +495,14 @@ async fn list_subscribers(
     match state
         .newsletter_manager
         .database()
-        .get_subscribers_paginated(status_filter, params.limit, params.offset)
+        .get_subscribers_paginated(status_filter, limit, offset)
     {
         Ok(subscribers) => Ok(Json(ApiResponse::success(subscribers))),
         Err(e) => {
             eprintln!("Failed to list subscribers: {}", e);
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!(
-                    "Failed to list subscribers: {}",
-                    e
-                ))),
+                Json(ApiResponse::error("Failed to list subscribers".to_string())),
             ))
         }
     }
@@ -773,16 +798,24 @@ async fn get_stats(
 ) -> Result<Json<ApiResponse<StatsResponse>>, (StatusCode, Json<ApiResponse<()>>)> {
     let db = state.newsletter_manager.database();
 
-    let total = db.get_subscriber_count(None).unwrap_or(0);
+    fn stats_err(e: anyhow::Error) -> (StatusCode, Json<ApiResponse<()>>) {
+        eprintln!("Failed to get subscriber stats: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error("Failed to get statistics".to_string())),
+        )
+    }
+
+    let total = db.get_subscriber_count(None).map_err(stats_err)?;
     let approved = db
         .get_subscriber_count(Some(SubscriberStatus::Approved))
-        .unwrap_or(0);
+        .map_err(stats_err)?;
     let pending = db
         .get_subscriber_count(Some(SubscriberStatus::Pending))
-        .unwrap_or(0);
+        .map_err(stats_err)?;
     let declined = db
         .get_subscriber_count(Some(SubscriberStatus::Declined))
-        .unwrap_or(0);
+        .map_err(stats_err)?;
 
     let stats = StatsResponse {
         total_subscribers: total,
@@ -983,9 +1016,7 @@ mod tests {
             newsletter_manager: Arc::new(newsletter_manager),
             config: Arc::new(config),
             api_config: Arc::new(ApiConfig::default()),
-            confirmation_semaphore: Arc::new(tokio::sync::Semaphore::new(
-                MAX_CONFIRMATION_TASKS,
-            )),
+            confirmation_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONFIRMATION_TASKS)),
         };
         (state, temp_dir)
     }
@@ -1013,6 +1044,15 @@ mod tests {
         // Domain must not start or end with dot
         assert!(!is_valid_email("user@.example.com"));
         assert!(!is_valid_email("user@example."));
+        // Local part must not start/end with dot or have consecutive dots
+        assert!(!is_valid_email(".user@example.com"));
+        assert!(!is_valid_email("user.@example.com"));
+        assert!(!is_valid_email("user..name@example.com"));
+        // Domain must not have consecutive dots
+        assert!(!is_valid_email("user@example..com"));
+        // Local part max 64 chars
+        let long_local = format!("{}@example.com", "a".repeat(65));
+        assert!(!is_valid_email(&long_local));
     }
 
     #[tokio::test]
