@@ -250,11 +250,10 @@ fn start_file_watcher(
                 continue; // Already rebuilding; dirty flag ensures a follow-up
             }
 
-            loop {
+            let last_build_ok: bool = loop {
                 dirty_clone.store(false, Ordering::SeqCst);
 
                 let project = project.clone();
-                let reload_tx = reload_tx.clone();
 
                 let build_ok = tokio::task::spawn_blocking(move || {
                     Console::info("File changed, rebuilding...");
@@ -265,7 +264,6 @@ fn start_file_watcher(
                                 Ok(builder) => match builder.build() {
                                     Ok(()) => {
                                         Console::success("Rebuild complete");
-                                        let _ = reload_tx.send(());
                                         true
                                     }
                                     Err(e) => {
@@ -290,9 +288,13 @@ fn start_file_watcher(
 
                 // If new changes arrived during the rebuild, rebuild again
                 if !dirty_clone.load(Ordering::SeqCst) || !build_ok {
-                    break;
+                    break build_ok;
                 }
                 Console::info("Changes detected during rebuild, rebuilding again...");
+            };
+
+            if last_build_ok {
+                let _ = reload_tx.send(());
             }
 
             rebuilding.store(false, Ordering::SeqCst);
