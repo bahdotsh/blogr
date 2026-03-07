@@ -315,6 +315,10 @@ impl NewsletterDatabase {
             );
 
             CREATE INDEX IF NOT EXISTS idx_confirmation_tokens_token ON confirmation_tokens(token);
+
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER NOT NULL
+            );
             "#,
         )
         .context("Failed to initialize database schema")?;
@@ -325,87 +329,118 @@ impl NewsletterDatabase {
         Ok(())
     }
 
-    /// Run migrations for existing databases
+    /// Get the current schema version (0 if table is empty or doesn't exist yet).
+    fn get_schema_version(conn: &rusqlite::Connection) -> i64 {
+        conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+    }
+
+    /// Record that a migration version has been applied.
+    fn set_schema_version(conn: &rusqlite::Connection, version: i64) -> Result<()> {
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            params![version],
+        )
+        .context("Failed to update schema version")?;
+        Ok(())
+    }
+
+    /// Run versioned migrations for existing databases.
+    /// Each migration runs at most once, tracked by the schema_version table.
     fn run_migrations(&self, conn: &rusqlite::Connection) -> Result<()> {
-        // Migration: add declined_at column if it doesn't exist
-        let has_declined_at: bool = conn
-            .prepare(
-                "SELECT COUNT(*) FROM pragma_table_info('subscribers') WHERE name='declined_at'",
-            )
-            .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
-            .map(|count| count > 0)
-            .unwrap_or(false);
+        let current_version = Self::get_schema_version(conn);
 
-        if !has_declined_at {
-            conn.execute_batch("ALTER TABLE subscribers ADD COLUMN declined_at DATETIME")
-                .context("Migration failed: could not add declined_at column")?;
-        }
+        // Migration 1: add declined_at column
+        if current_version < 1 {
+            let has_declined_at: bool = conn
+                .prepare(
+                    "SELECT COUNT(*) FROM pragma_table_info('subscribers') WHERE name='declined_at'",
+                )
+                .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
+                .map(|count| count > 0)
+                .unwrap_or(false);
 
-        // Migration: add soft_bounce_count column if it doesn't exist
-        let has_soft_bounce: bool = conn
-            .prepare(
-                "SELECT COUNT(*) FROM pragma_table_info('subscribers') WHERE name='soft_bounce_count'",
-            )
-            .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
-            .map(|count| count > 0)
-            .unwrap_or(false);
-
-        if !has_soft_bounce {
-            conn.execute_batch(
-                "ALTER TABLE subscribers ADD COLUMN soft_bounce_count INTEGER NOT NULL DEFAULT 0",
-            )
-            .context("Migration failed: could not add soft_bounce_count column")?;
-        }
-
-        // Migration: remove CHECK constraint on status column for existing databases.
-        // Previous schema used CHECK (status IN ('pending', 'approved', 'declined')) which
-        // rejects 'unconfirmed'. Since we add missing columns above first, all columns exist
-        // by the time we get here. Validation is enforced at the application level.
-        let table_sql: String = conn
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE type='table' AND name='subscribers'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or_default();
-
-        if table_sql.contains("CHECK") {
-            // Wrap in an explicit transaction so the migration is atomic —
-            // if anything fails, the original table is preserved.
-            let migration_result: Result<(), rusqlite::Error> = (|| {
-                conn.execute_batch("BEGIN IMMEDIATE")?;
-                conn.execute_batch(
-                    "CREATE TABLE subscribers_new (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        email TEXT UNIQUE NOT NULL,
-                        status TEXT NOT NULL,
-                        subscribed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        approved_at DATETIME,
-                        declined_at DATETIME,
-                        source_email_id TEXT,
-                        notes TEXT,
-                        soft_bounce_count INTEGER NOT NULL DEFAULT 0
-                    );
-                    INSERT INTO subscribers_new (id, email, status, subscribed_at, approved_at, declined_at, source_email_id, notes, soft_bounce_count)
-                        SELECT id, email, status, subscribed_at, approved_at, declined_at, source_email_id, notes, soft_bounce_count FROM subscribers;
-                    DROP TABLE subscribers;
-                    ALTER TABLE subscribers_new RENAME TO subscribers;
-                    CREATE INDEX IF NOT EXISTS idx_subscribers_status ON subscribers(status);
-                    CREATE INDEX IF NOT EXISTS idx_subscribers_email ON subscribers(email);
-                    CREATE INDEX IF NOT EXISTS idx_subscribers_subscribed_at ON subscribers(subscribed_at);",
-                )?;
-                conn.execute_batch("COMMIT")?;
-                Ok(())
-            })();
-
-            if let Err(e) = migration_result {
-                let _ = conn.execute_batch("ROLLBACK");
-                eprintln!(
-                    "Warning: failed to migrate subscribers table CHECK constraint: {}. \
-                     This is non-fatal but 'unconfirmed' status may not work on this database.",
-                    e
-                );
+            if !has_declined_at {
+                conn.execute_batch("ALTER TABLE subscribers ADD COLUMN declined_at DATETIME")
+                    .context("Migration 1 failed: could not add declined_at column")?;
             }
+            Self::set_schema_version(conn, 1)?;
+        }
+
+        // Migration 2: add soft_bounce_count column
+        if current_version < 2 {
+            let has_soft_bounce: bool = conn
+                .prepare(
+                    "SELECT COUNT(*) FROM pragma_table_info('subscribers') WHERE name='soft_bounce_count'",
+                )
+                .and_then(|mut stmt| stmt.query_row([], |row| row.get::<_, i64>(0)))
+                .map(|count| count > 0)
+                .unwrap_or(false);
+
+            if !has_soft_bounce {
+                conn.execute_batch(
+                    "ALTER TABLE subscribers ADD COLUMN soft_bounce_count INTEGER NOT NULL DEFAULT 0",
+                )
+                .context("Migration 2 failed: could not add soft_bounce_count column")?;
+            }
+            Self::set_schema_version(conn, 2)?;
+        }
+
+        // Migration 3: remove CHECK constraint on status column.
+        // Previous schema used CHECK (status IN ('pending', 'approved', 'declined')) which
+        // rejects 'unconfirmed'. Validation is enforced at the application level.
+        if current_version < 3 {
+            let table_sql: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='subscribers'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or_default();
+
+            if table_sql.contains("CHECK") {
+                // Wrap in an explicit transaction so the migration is atomic —
+                // if anything fails, the original table is preserved.
+                let migration_result: Result<(), rusqlite::Error> = (|| {
+                    conn.execute_batch("BEGIN IMMEDIATE")?;
+                    conn.execute_batch(
+                        "CREATE TABLE subscribers_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            email TEXT UNIQUE NOT NULL,
+                            status TEXT NOT NULL,
+                            subscribed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            approved_at DATETIME,
+                            declined_at DATETIME,
+                            source_email_id TEXT,
+                            notes TEXT,
+                            soft_bounce_count INTEGER NOT NULL DEFAULT 0
+                        );
+                        INSERT INTO subscribers_new (id, email, status, subscribed_at, approved_at, declined_at, source_email_id, notes, soft_bounce_count)
+                            SELECT id, email, status, subscribed_at, approved_at, declined_at, source_email_id, notes, soft_bounce_count FROM subscribers;
+                        DROP TABLE subscribers;
+                        ALTER TABLE subscribers_new RENAME TO subscribers;
+                        CREATE INDEX IF NOT EXISTS idx_subscribers_status ON subscribers(status);
+                        CREATE INDEX IF NOT EXISTS idx_subscribers_email ON subscribers(email);
+                        CREATE INDEX IF NOT EXISTS idx_subscribers_subscribed_at ON subscribers(subscribed_at);",
+                    )?;
+                    conn.execute_batch("COMMIT")?;
+                    Ok(())
+                })();
+
+                if let Err(e) = migration_result {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    eprintln!(
+                        "Warning: failed to migrate subscribers table CHECK constraint: {}. \
+                         This is non-fatal but 'unconfirmed' status may not work on this database.",
+                        e
+                    );
+                }
+            }
+            Self::set_schema_version(conn, 3)?;
         }
 
         Ok(())
