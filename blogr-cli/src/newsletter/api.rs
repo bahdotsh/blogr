@@ -311,39 +311,7 @@ async fn auth_middleware(req: Request, next: Next, api_key: Arc<String>) -> Resp
     }
 }
 
-/// Email format validation.
-/// Checks structure per RFC 5321 basics: local@domain, reasonable lengths,
-/// no consecutive dots, no leading/trailing dots, no whitespace.
-fn is_valid_email(email: &str) -> bool {
-    let parts: Vec<&str> = email.split('@').collect();
-    if parts.len() != 2 {
-        return false;
-    }
-    let local = parts[0];
-    let domain = parts[1];
-
-    // Overall length (RFC 5321: 254 max for addr, local max 64)
-    if email.len() < 5 || email.len() > 254 || local.len() > 64 {
-        return false;
-    }
-
-    // Local part checks
-    if local.is_empty()
-        || local.starts_with('.')
-        || local.ends_with('.')
-        || local.contains("..")
-        || email.contains(' ')
-    {
-        return false;
-    }
-
-    // Domain checks
-    domain.contains('.')
-        && !domain.starts_with('.')
-        && !domain.ends_with('.')
-        && !domain.contains("..")
-        && domain.len() >= 3
-}
+use super::is_valid_email;
 
 /// Health check endpoint
 async fn health_check() -> Json<ApiResponse<HashMap<String, String>>> {
@@ -640,10 +608,9 @@ async fn create_subscriber(
             } else {
                 Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiResponse::error(format!(
-                        "Failed to create subscriber: {}",
-                        e
-                    ))),
+                    Json(ApiResponse::error(
+                        "Failed to create subscriber".to_string(),
+                    )),
                 ))
             }
         }
@@ -663,10 +630,7 @@ async fn get_subscriber(
         Ok(Some(subscriber)) => Ok(Json(ApiResponse::success(subscriber))),
         Ok(None) => Err((
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::error(format!(
-                "Subscriber '{}' not found",
-                email
-            ))),
+            Json(ApiResponse::error("Subscriber not found".to_string())),
         )),
         Err(e) => {
             eprintln!("Failed to get subscriber: {}", e);
@@ -693,10 +657,7 @@ async fn update_subscriber(
         Ok(None) => {
             return Err((
                 StatusCode::NOT_FOUND,
-                Json(ApiResponse::error(format!(
-                    "Subscriber '{}' not found",
-                    email
-                ))),
+                Json(ApiResponse::error("Subscriber not found".to_string())),
             ))
         }
         Err(e) => {
@@ -744,10 +705,9 @@ async fn update_subscriber(
             eprintln!("Failed to update subscriber: {}", e);
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!(
-                    "Failed to update subscriber: {}",
-                    e
-                ))),
+                Json(ApiResponse::error(
+                    "Failed to update subscriber".to_string(),
+                )),
             ))
         }
     }
@@ -766,19 +726,15 @@ async fn delete_subscriber(
         Ok(true) => Ok(Json(ApiResponse::success(()))),
         Ok(false) => Err((
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::error(format!(
-                "Subscriber '{}' not found",
-                email
-            ))),
+            Json(ApiResponse::error("Subscriber not found".to_string())),
         )),
         Err(e) => {
             eprintln!("Failed to delete subscriber: {}", e);
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!(
-                    "Failed to delete subscriber: {}",
-                    e
-                ))),
+                Json(ApiResponse::error(
+                    "Failed to delete subscriber".to_string(),
+                )),
             ))
         }
     }
@@ -844,17 +800,15 @@ async fn update_subscriber_tags(
         Ok(None) => {
             return Err((
                 StatusCode::NOT_FOUND,
-                Json(ApiResponse::error(format!(
-                    "Subscriber '{}' not found",
-                    email
-                ))),
+                Json(ApiResponse::error("Subscriber not found".to_string())),
             ))
         }
         Err(e) => {
+            eprintln!("Failed to get subscriber for tags: {}", e);
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!("Database error: {}", e))),
-            ))
+                Json(ApiResponse::error("Internal database error".to_string())),
+            ));
         }
     };
 
@@ -868,18 +822,22 @@ async fn update_subscriber_tags(
 
     // Atomically replace all tags in a single transaction
     if let Err(e) = db.set_tags(id, &request.tags) {
+        eprintln!("Failed to set tags: {}", e);
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Failed to set tags: {}", e))),
+            Json(ApiResponse::error("Failed to set tags".to_string())),
         ));
     }
 
     match db.get_tags(id) {
         Ok(tags) => Ok(Json(ApiResponse::success(tags))),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Failed to get tags: {}", e))),
-        )),
+        Err(e) => {
+            eprintln!("Failed to get tags: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error("Failed to get tags".to_string())),
+            ))
+        }
     }
 }
 
@@ -897,17 +855,15 @@ async fn get_subscriber_tags(
         Ok(None) => {
             return Err((
                 StatusCode::NOT_FOUND,
-                Json(ApiResponse::error(format!(
-                    "Subscriber '{}' not found",
-                    email
-                ))),
+                Json(ApiResponse::error("Subscriber not found".to_string())),
             ))
         }
         Err(e) => {
+            eprintln!("Failed to get subscriber for tags: {}", e);
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!("Database error: {}", e))),
-            ))
+                Json(ApiResponse::error("Internal database error".to_string())),
+            ));
         }
     };
 
@@ -921,10 +877,13 @@ async fn get_subscriber_tags(
             )
         })?) {
         Ok(tags) => Ok(Json(ApiResponse::success(tags))),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Failed to get tags: {}", e))),
-        )),
+        Err(e) => {
+            eprintln!("Failed to get tags: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error("Failed to get tags".to_string())),
+            ))
+        }
     }
 }
 
@@ -940,10 +899,13 @@ async fn list_tags(
                 .collect();
             Ok(Json(ApiResponse::success(tag_infos)))
         }
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Failed to list tags: {}", e))),
-        )),
+        Err(e) => {
+            eprintln!("Failed to list tags: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error("Failed to list tags".to_string())),
+            ))
+        }
     }
 }
 
@@ -966,10 +928,7 @@ async fn handle_bounce_webhook(
             eprintln!("Failed to record bounce: {}", e);
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!(
-                    "Failed to record bounce: {}",
-                    e
-                ))),
+                Json(ApiResponse::error("Failed to record bounce".to_string())),
             ))
         }
     }
@@ -986,10 +945,13 @@ async fn get_bounces(
         .get_bounces(&params.email)
     {
         Ok(bounces) => Ok(Json(ApiResponse::success(bounces))),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Failed to get bounces: {}", e))),
-        )),
+        Err(e) => {
+            eprintln!("Failed to get bounces: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error("Failed to get bounces".to_string())),
+            ))
+        }
     }
 }
 

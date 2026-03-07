@@ -464,7 +464,7 @@ impl MigrationManager {
             .ok_or_else(|| anyhow::anyhow!("Email field is required"))?;
 
         // Validate email format
-        if !email.contains('@') {
+        if !super::is_valid_email(&email) {
             return Err(anyhow::anyhow!("Invalid email format: {}", email));
         }
 
