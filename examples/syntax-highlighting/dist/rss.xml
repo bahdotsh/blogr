@@ -6,7 +6,7 @@
     <atom:link href="https://example.com/rss.xml" rel="self" type="application/rss+xml" />
     <description><![CDATA[A sample project demonstrating syntax highlighting in code blocks]]></description>
     <language>en</language>
-    <lastBuildDate>Sat, 07 Mar 2026 05:34:03 +0000</lastBuildDate>
+    <lastBuildDate>Sat, 07 Mar 2026 06:22:02 +0000</lastBuildDate>
     <generator>Blogr Static Site Generator</generator>
     <item>
       <title><![CDATA[Syntax Highlighting Showcase]]></title>
