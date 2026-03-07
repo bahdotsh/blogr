@@ -22,7 +22,7 @@ pub async fn handle_fetch_subscribers(interactive: bool) -> Result<()> {
         .context("Failed to load project configuration")?;
 
     // Create newsletter manager
-    let mut newsletter_manager = NewsletterManager::new(config, &project.root)
+    let newsletter_manager = NewsletterManager::new(config, &project.root)
         .context("Failed to initialize newsletter manager")?;
 
     // Check if newsletter is enabled
@@ -432,6 +432,15 @@ pub fn handle_export(
     Ok(())
 }
 
+/// Escape a field for CSV output (RFC 4180)
+fn csv_escape(field: &str) -> String {
+    if field.contains(',') || field.contains('"') || field.contains('\n') || field.contains('\r') {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
 /// Export subscribers to CSV format
 fn export_csv(subscribers: &[crate::newsletter::Subscriber]) -> Result<String> {
     let mut output = String::new();
@@ -452,12 +461,12 @@ fn export_csv(subscribers: &[crate::newsletter::Subscriber]) -> Result<String> {
         output.push_str(&format!(
             "{},{},{},{},{},{},{}\n",
             subscriber.id.unwrap_or(0),
-            subscriber.email,
+            csv_escape(&subscriber.email),
             subscriber.status,
             subscriber.subscribed_at.format("%Y-%m-%d %H:%M:%S"),
-            approved_at,
-            source_email_id,
-            notes
+            csv_escape(&approved_at),
+            csv_escape(source_email_id),
+            csv_escape(notes),
         ));
     }
 
@@ -724,7 +733,8 @@ pub async fn handle_import(
     }
 
     // Parse migration source
-    let migration_source = MigrationSource::from_str(source)
+    let migration_source: MigrationSource = source
+        .parse()
         .with_context(|| format!("Unsupported migration source: {}", source))?;
 
     // Create migration configuration
@@ -1064,15 +1074,14 @@ pub async fn handle_api_server(
     let api_server = NewsletterApiServer::new(newsletter_manager, config, api_config);
 
     println!("Newsletter API Documentation:");
-    println!("  GET  /health              - Health check");
-    println!("  GET  /subscribers         - List subscribers");
-    println!("  POST /subscribers         - Create subscriber");
-    println!("  GET  /subscribers/:email  - Get subscriber");
-    println!("  PUT  /subscribers/:email  - Update subscriber");
-    println!("  DEL  /subscribers/:email  - Delete subscriber");
-    println!("  GET  /stats               - Get statistics");
-    println!("  GET  /export              - Export subscribers");
-    println!("  POST /import              - Import subscribers");
+    println!("  GET  /health                - Health check");
+    println!("  GET  /subscribers           - List subscribers");
+    println!("  POST /subscribers           - Create subscriber");
+    println!("  GET  /subscribers/{{email}}   - Get subscriber");
+    println!("  PUT  /subscribers/{{email}}   - Update subscriber");
+    println!("  DEL  /subscribers/{{email}}   - Delete subscriber");
+    println!("  GET  /stats                 - Get statistics");
+    println!("  GET  /export                - Export subscribers");
     println!();
 
     if let Some(key) = api_key {

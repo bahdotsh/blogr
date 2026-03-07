@@ -29,9 +29,10 @@ pub enum MigrationSource {
     Json,
 }
 
-impl MigrationSource {
-    /// Parse migration source from string
-    pub fn from_str(s: &str) -> Result<Self> {
+impl std::str::FromStr for MigrationSource {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
             "mailchimp" => Ok(Self::Mailchimp),
             "convertkit" => Ok(Self::ConvertKit),
@@ -42,7 +43,9 @@ impl MigrationSource {
             _ => Err(anyhow::anyhow!("Unsupported migration source: {}", s)),
         }
     }
+}
 
+impl MigrationSource {
     /// Get all supported sources as strings
     #[allow(dead_code)]
     pub fn all_sources() -> Vec<&'static str> {
@@ -573,11 +576,16 @@ impl MigrationManager {
         }
 
         Ok(Subscriber {
-            id: Some(0_i64), // Will be set by database
+            id: None,
             email: imported.email.clone(),
             status: status.clone(),
             subscribed_at,
             approved_at: if status == SubscriberStatus::Approved {
+                Some(subscribed_at)
+            } else {
+                None
+            },
+            declined_at: if status == SubscriberStatus::Declined {
                 Some(subscribed_at)
             } else {
                 None
@@ -658,52 +666,52 @@ impl MigrationManager {
 
 #[cfg(test)]
 mod tests {
-    // use std::io::Write;
-    // use tempfile::NamedTempFile;
+    use super::*;
 
-    // Tests commented out until NewsletterDatabase::in_memory() is implemented
-    // #[test]
-    // fn test_csv_line_parsing() {
-    //     let migration = MigrationManager::new(NewsletterDatabase::in_memory().unwrap());
-    //
-    //     // Test simple CSV
-    //     let fields = migration.parse_csv_line("test@example.com,John Doe,subscribed", ',');
-    //     assert_eq!(fields, vec!["test@example.com", "John Doe", "subscribed"]);
-    //
-    //     // Test CSV with quotes
-    //     let fields = migration.parse_csv_line(r#""test@example.com","John, Doe","subscribed""#, ',');
-    //     assert_eq!(fields, vec!["test@example.com", "John, Doe", "subscribed"]);
-    // }
+    #[test]
+    fn test_csv_line_parsing() {
+        let db = NewsletterDatabase::in_memory().unwrap();
+        let migration = MigrationManager::new(db);
 
-    // #[test]
-    // fn test_date_parsing() {
-    //     let migration = MigrationManager::new(NewsletterDatabase::in_memory().unwrap());
-    //
-    //     // Test various date formats
-    //     assert!(migration.parse_date("2023-12-01 10:30:00").is_ok());
-    //     assert!(migration.parse_date("2023-12-01T10:30:00Z").is_ok());
-    //     assert!(migration.parse_date("2023-12-01").is_ok());
-    //     assert!(migration.parse_date("12/01/2023").is_ok());
-    // }
+        // Test simple CSV
+        let fields = migration.parse_csv_line("test@example.com,John Doe,subscribed", ',');
+        assert_eq!(fields, vec!["test@example.com", "John Doe", "subscribed"]);
 
-    // #[test]
-    // fn test_status_mapping() {
-    //     let migration = MigrationManager::new(NewsletterDatabase::in_memory().unwrap());
-    //
-    //     // Test Mailchimp status mapping
-    //     assert_eq!(
-    //         migration.map_subscriber_status(
-    //             &Some("subscribed".to_string()),
-    //             &MigrationSource::Mailchimp
-    //         ),
-    //         SubscriberStatus::Approved
-    //     );
-    //     assert_eq!(
-    //         migration.map_subscriber_status(
-    //             &Some("unsubscribed".to_string()),
-    //             &MigrationSource::Mailchimp
-    //         ),
-    //         SubscriberStatus::Declined
-    //     );
-    // }
+        // Test CSV with quotes
+        let fields =
+            migration.parse_csv_line(r#""test@example.com","John, Doe","subscribed""#, ',');
+        assert_eq!(fields, vec!["test@example.com", "John, Doe", "subscribed"]);
+    }
+
+    #[test]
+    fn test_date_parsing() {
+        let db = NewsletterDatabase::in_memory().unwrap();
+        let migration = MigrationManager::new(db);
+
+        assert!(migration.parse_date("2023-12-01 10:30:00").is_ok());
+        assert!(migration.parse_date("2023-12-01T10:30:00Z").is_ok());
+        assert!(migration.parse_date("2023-12-01").is_ok());
+        assert!(migration.parse_date("12/01/2023").is_ok());
+    }
+
+    #[test]
+    fn test_status_mapping() {
+        let db = NewsletterDatabase::in_memory().unwrap();
+        let migration = MigrationManager::new(db);
+
+        assert_eq!(
+            migration.map_subscriber_status(
+                &Some("subscribed".to_string()),
+                &MigrationSource::Mailchimp
+            ),
+            SubscriberStatus::Approved
+        );
+        assert_eq!(
+            migration.map_subscriber_status(
+                &Some("unsubscribed".to_string()),
+                &MigrationSource::Mailchimp
+            ),
+            SubscriberStatus::Declined
+        );
+    }
 }

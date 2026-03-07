@@ -1,22 +1,25 @@
 //! SMTP email sending for newsletters
 //!
-//! This module handles sending newsletters via SMTP with rate limiting,
-//! bounce handling, and progress tracking.
+//! This module handles sending newsletters via SMTP with rate limiting
+//! and progress tracking.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use hmac::{Hmac, Mac};
 use lettre::message::{header, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{Message, SmtpTransport, Transport};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::thread;
 use std::time::{Duration, Instant};
-use uuid::Uuid;
 
 use crate::config::SmtpConfig;
 use crate::newsletter::composer::Newsletter;
-use crate::newsletter::database::{Subscriber, SubscriberStatus};
+use crate::newsletter::database::{NewsletterDatabase, Subscriber, SubscriberStatus};
+
+type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendReport {
@@ -105,15 +108,17 @@ impl RateLimiter {
             let wait_time = Duration::from_secs(60) - (now - oldest_send);
             if wait_time > Duration::from_secs(0) {
                 println!(
-                    "⏳ Rate limit reached, waiting {} seconds...",
+                    "Rate limit reached, waiting {} seconds...",
                     wait_time.as_secs()
                 );
                 thread::sleep(wait_time);
             }
         }
+    }
 
-        // Record this send time
-        self.last_send_times.push(now);
+    /// Record a send after it actually completes
+    pub fn record_send(&mut self) {
+        self.last_send_times.push(Instant::now());
     }
 }
 
@@ -121,6 +126,8 @@ pub struct NewsletterSender {
     smtp_config: SmtpConfig,
     rate_limiter: RateLimiter,
     from_address: Mailbox,
+    /// Secret key for generating HMAC-based unsubscribe tokens
+    hmac_secret: String,
 }
 
 impl NewsletterSender {
@@ -129,6 +136,7 @@ impl NewsletterSender {
         smtp_config: SmtpConfig,
         sender_name: Option<String>,
         emails_per_minute: u32,
+        hmac_secret: String,
     ) -> Result<Self> {
         let from_name = sender_name.unwrap_or_else(|| "Newsletter".to_string());
         let from_address = format!("{} <{}>", from_name, smtp_config.username)
@@ -139,15 +147,17 @@ impl NewsletterSender {
             smtp_config,
             rate_limiter: RateLimiter::new(emails_per_minute),
             from_address,
+            hmac_secret,
         })
     }
 
-    /// Send newsletter to all approved subscribers
+    /// Send newsletter to all approved subscribers, recording history in database
     pub fn send_to_subscribers(
         &mut self,
         newsletter: &Newsletter,
         subscribers: &[Subscriber],
         smtp_password: &str,
+        database: Option<&NewsletterDatabase>,
         progress_callback: Option<Box<dyn Fn(usize, usize)>>,
     ) -> Result<SendReport> {
         let approved_subscribers: Vec<_> = subscribers
@@ -158,13 +168,13 @@ impl NewsletterSender {
         let mut report = SendReport::new(approved_subscribers.len());
 
         if approved_subscribers.is_empty() {
-            println!("⚠️  No approved subscribers found");
+            println!("No approved subscribers found");
             report.complete();
             return Ok(report);
         }
 
         println!(
-            "📤 Sending newsletter to {} approved subscribers",
+            "Sending newsletter to {} approved subscribers",
             approved_subscribers.len()
         );
 
@@ -172,7 +182,7 @@ impl NewsletterSender {
         let transport = self.create_smtp_transport(smtp_password)?;
 
         for (index, subscriber) in approved_subscribers.iter().enumerate() {
-            // Rate limiting
+            // Rate limiting - check before send
             self.rate_limiter.wait_if_needed();
 
             // Generate unsubscribe token
@@ -184,23 +194,45 @@ impl NewsletterSender {
 
             match self.send_single_email(&transport, &personalized_newsletter, subscriber) {
                 Ok(_) => {
+                    // Record send time after successful send
+                    self.rate_limiter.record_send();
                     report.add_success();
-                    println!("✅ Sent to {}", subscriber.email);
+                    println!("Sent to {}", subscriber.email);
                 }
                 Err(e) => {
+                    self.rate_limiter.record_send();
                     let error_msg = format!("Failed to send to {}: {}", subscriber.email, e);
                     report.add_error(subscriber.email.clone(), error_msg.clone());
-                    println!("❌ {}", error_msg);
+                    eprintln!("{}", error_msg);
                 }
             }
 
-            // Call progress callback if provided
             if let Some(ref callback) = progress_callback {
                 callback(index + 1, approved_subscribers.len());
             }
         }
 
         report.complete();
+
+        // Record send history in database
+        if let Some(db) = database {
+            if let Ok(send_id) = db.record_send(
+                &newsletter.subject,
+                report.total_subscribers,
+                report.successful_sends,
+                report.failed_sends,
+            ) {
+                for error in &report.errors {
+                    let _ = db.record_send_recipient(
+                        send_id,
+                        &error.subscriber_email,
+                        "failed",
+                        Some(&error.error_message),
+                    );
+                }
+            }
+        }
+
         self.print_send_summary(&report);
 
         Ok(report)
@@ -213,17 +245,17 @@ impl NewsletterSender {
         test_email: &str,
         smtp_password: &str,
     ) -> Result<()> {
-        println!("📧 Sending test email to {}", test_email);
+        println!("Sending test email to {}", test_email);
 
         let transport = self.create_smtp_transport(smtp_password)?;
 
-        // Create test subscriber
         let test_subscriber = Subscriber {
             id: None,
             email: test_email.to_string(),
             status: SubscriberStatus::Approved,
             subscribed_at: Utc::now(),
             approved_at: Some(Utc::now()),
+            declined_at: None,
             source_email_id: None,
             notes: Some("Test email".to_string()),
         };
@@ -235,7 +267,7 @@ impl NewsletterSender {
         self.send_single_email(&transport, &personalized_newsletter, &test_subscriber)
             .context("Failed to send test email")?;
 
-        println!("✅ Test email sent successfully");
+        println!("Test email sent successfully");
         Ok(())
     }
 
@@ -245,15 +277,15 @@ impl NewsletterSender {
 
         let mut builder = SmtpTransport::relay(&self.smtp_config.server)?;
 
-        // Configure TLS
+        // Configure TLS - always use Required to prevent downgrade attacks
         if self.smtp_config.port == 465 {
             // SMTPS (implicit TLS)
             builder = builder.tls(Tls::Required(TlsParameters::new(
                 self.smtp_config.server.clone(),
             )?));
         } else if self.smtp_config.port == 587 {
-            // SMTP with STARTTLS
-            builder = builder.tls(Tls::Opportunistic(TlsParameters::new(
+            // SMTP with STARTTLS - must be Required to prevent plaintext fallback
+            builder = builder.tls(Tls::Required(TlsParameters::new(
                 self.smtp_config.server.clone(),
             )?));
         }
@@ -338,69 +370,44 @@ impl NewsletterSender {
         Ok(personalized)
     }
 
-    /// Generate unique unsubscribe token for subscriber
+    /// Generate cryptographically secure unsubscribe token using HMAC-SHA256
     fn generate_unsubscribe_token(&self, email: &str) -> String {
-        // Create a simple but unique token based on email and timestamp
-        let uuid = Uuid::new_v4();
-        format!(
-            "{}:{}",
-            base64::encode(email.as_bytes()),
-            &uuid.to_string()[..8]
-        )
+        let mut mac = HmacSha256::new_from_slice(self.hmac_secret.as_bytes())
+            .expect("HMAC can take key of any size");
+        mac.update(email.as_bytes());
+        let result = mac.finalize();
+        hex::encode(result.into_bytes())
+    }
+
+    /// Verify an unsubscribe token against an email
+    #[allow(dead_code)]
+    pub fn verify_unsubscribe_token(&self, email: &str, token: &str) -> bool {
+        let expected = self.generate_unsubscribe_token(email);
+        // Constant-time comparison
+        expected == token
     }
 
     /// Print sending summary
     fn print_send_summary(&self, report: &SendReport) {
-        println!("\n📊 Newsletter Sending Summary");
-        println!("═══════════════════════════════");
-        println!("📧 Total subscribers: {}", report.total_subscribers);
-        println!("✅ Successful sends: {}", report.successful_sends);
-        println!("❌ Failed sends: {}", report.failed_sends);
-        println!("📈 Success rate: {:.1}%", report.success_rate() * 100.0);
+        println!("\nNewsletter Sending Summary");
+        println!("===========================");
+        println!("Total subscribers: {}", report.total_subscribers);
+        println!("Successful sends: {}", report.successful_sends);
+        println!("Failed sends: {}", report.failed_sends);
+        println!("Success rate: {:.1}%", report.success_rate() * 100.0);
 
         if let Some(completed_at) = report.completed_at {
             let duration = completed_at - report.started_at;
-            println!("⏱️  Total time: {} seconds", duration.num_seconds());
+            println!("Total time: {} seconds", duration.num_seconds());
         }
 
         if !report.errors.is_empty() {
-            println!("\n❌ Errors:");
+            println!("\nErrors:");
             for error in &report.errors {
-                println!("  • {}: {}", error.subscriber_email, error.error_message);
+                println!("  - {}: {}", error.subscriber_email, error.error_message);
             }
         }
         println!();
-    }
-}
-
-// Add base64 encoding for unsubscribe tokens
-mod base64 {
-    pub fn encode(input: &[u8]) -> String {
-        const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut result = String::new();
-
-        for chunk in input.chunks(3) {
-            let b1 = chunk[0];
-            let b2 = chunk.get(1).copied().unwrap_or(0);
-            let b3 = chunk.get(2).copied().unwrap_or(0);
-
-            let combined = ((b1 as u32) << 16) | ((b2 as u32) << 8) | (b3 as u32);
-
-            result.push(CHARS[((combined >> 18) & 63) as usize] as char);
-            result.push(CHARS[((combined >> 12) & 63) as usize] as char);
-            result.push(if chunk.len() > 1 {
-                CHARS[((combined >> 6) & 63) as usize] as char
-            } else {
-                '='
-            });
-            result.push(if chunk.len() > 2 {
-                CHARS[(combined & 63) as usize] as char
-            } else {
-                '='
-            });
-        }
-
-        result
     }
 }
 
@@ -425,11 +432,10 @@ mod tests {
         assert_eq!(report.errors.len(), 1);
         assert!(!report.is_complete());
 
-        // Complete remaining sends
         report.add_success();
         report.add_success();
         assert!(report.is_complete());
-        assert_eq!(report.success_rate(), 0.8); // 4/5
+        assert_eq!(report.success_rate(), 0.8);
     }
 
     #[test]
@@ -438,17 +444,44 @@ mod tests {
 
         // Should not wait for first two sends
         limiter.wait_if_needed();
+        limiter.record_send();
         limiter.wait_if_needed();
+        limiter.record_send();
 
-        // Third send should wait (but we can't easily test the timing in unit tests)
         assert_eq!(limiter.last_send_times.len(), 2);
     }
 
     #[test]
-    fn test_base64_encoding() {
-        let input = "test@example.com";
-        let encoded = base64::encode(input.as_bytes());
-        assert!(!encoded.is_empty());
-        assert!(encoded.len() > input.len());
+    fn test_unsubscribe_token_generation_and_verification() {
+        let smtp_config = SmtpConfig {
+            server: "smtp.example.com".to_string(),
+            port: 587,
+            username: "test@example.com".to_string(),
+            use_tls: Some(true),
+        };
+
+        let sender = NewsletterSender::new(
+            smtp_config,
+            None,
+            10,
+            "test-secret-key-for-hmac".to_string(),
+        )
+        .unwrap();
+
+        let email = "subscriber@example.com";
+        let token = sender.generate_unsubscribe_token(email);
+
+        // Token should be a hex string (64 chars for SHA256)
+        assert_eq!(token.len(), 64);
+
+        // Verification should pass
+        assert!(sender.verify_unsubscribe_token(email, &token));
+
+        // Wrong email should fail
+        assert!(!sender.verify_unsubscribe_token("other@example.com", &token));
+
+        // Same email should always produce the same token (deterministic)
+        let token2 = sender.generate_unsubscribe_token(email);
+        assert_eq!(token, token2);
     }
 }

@@ -109,8 +109,16 @@ impl NewsletterManager {
             .context("NEWSLETTER_SMTP_PASSWORD environment variable not set")
     }
 
+    /// Get HMAC secret for unsubscribe tokens, from env or derive from SMTP password
+    fn get_hmac_secret(&self) -> Result<String> {
+        env::var("NEWSLETTER_HMAC_SECRET").or_else(|_| {
+            self.get_smtp_password()
+                .map(|p| format!("blogr-newsletter-{}", p))
+        })
+    }
+
     /// Fetch subscribers from email inbox
-    pub fn fetch_subscribers(&mut self, interactive: bool) -> Result<()> {
+    pub fn fetch_subscribers(&self, interactive: bool) -> Result<()> {
         if !self.is_enabled() {
             return Err(anyhow::anyhow!(
                 "Newsletter functionality is not enabled. Set newsletter.enabled = true in blogr.toml"
@@ -123,7 +131,7 @@ impl NewsletterManager {
             ))?;
 
         let password = if interactive {
-            self.prompt_for_password("IMAP")?
+            Self::prompt_for_password("IMAP")?
         } else {
             self.get_imap_password()?
         };
@@ -141,7 +149,7 @@ impl NewsletterManager {
         }
 
         println!("Processing {} emails for subscribers...", emails.len());
-        let new_subscribers = fetcher.process_subscribers(&emails, &mut self.database)?;
+        let new_subscribers = fetcher.process_subscribers(&emails, &self.database)?;
 
         if new_subscribers.is_empty() {
             println!("No new subscribers found.");
@@ -153,39 +161,31 @@ impl NewsletterManager {
             println!("\nUse 'blogr newsletter approve' to review and approve these subscribers.");
         }
 
-        // Mark emails as processed
-        let email_ids: Vec<u32> = emails.iter().map(|e| e.id).collect();
-        fetcher.mark_emails_as_seen(&email_ids)?;
+        // Only mark subscription-related emails as seen, not all emails
+        let subscription_email_ids: Vec<u32> = emails
+            .iter()
+            .filter(|e| fetcher.is_subscription_email_public(e))
+            .map(|e| e.id)
+            .collect();
+
+        if !subscription_email_ids.is_empty() {
+            fetcher.mark_emails_as_seen(&subscription_email_ids)?;
+        }
 
         Ok(())
     }
 
-    /// Prompt user for password securely
-    fn prompt_for_password(&self, service: &str) -> Result<String> {
-        use std::io::{self, Write};
-
-        print!("Enter {} password: ", service);
-        io::stdout().flush()?;
-
-        // In a real implementation, you'd want to use a library like `rpassword`
-        // for secure password input. For now, we'll use a simple approach.
-        let mut password = String::new();
-        io::stdin().read_line(&mut password)?;
-
-        Ok(password.trim().to_string())
-    }
-
-    /// Get mutable database reference
-    #[allow(dead_code)]
-    pub fn database_mut(&mut self) -> &NewsletterDatabase {
-        &self.database
+    /// Prompt user for password securely (hides input)
+    fn prompt_for_password(service: &str) -> Result<String> {
+        let prompt = format!("Enter {} password: ", service);
+        rpassword::read_password_from_tty(Some(&prompt)).context("Failed to read password")
     }
 
     /// Print newsletter configuration status
     pub fn print_status(&self) -> Result<()> {
         println!("Newsletter Configuration Status:");
         println!("================================");
-        println!("Enabled: {}", if self.is_enabled() { "✓" } else { "✗" });
+        println!("Enabled: {}", if self.is_enabled() { "Yes" } else { "No" });
 
         if let Some(ref email) = self.config.newsletter.subscribe_email {
             println!("Subscribe Email: {}", email);
@@ -207,9 +207,9 @@ impl NewsletterManager {
                 println!(
                     "IMAP Password: {}",
                     if self.get_imap_password().is_ok() {
-                        "✓ Set"
+                        "Set"
                     } else {
-                        "✗ Not set"
+                        "Not set"
                     }
                 );
             }
@@ -226,9 +226,9 @@ impl NewsletterManager {
                 println!(
                     "SMTP Password: {}",
                     if self.get_smtp_password().is_ok() {
-                        "✓ Set"
+                        "Set"
                     } else {
-                        "✗ Not set"
+                        "Not set"
                     }
                 );
             }
@@ -353,9 +353,10 @@ impl NewsletterManager {
             ))?;
 
         let sender_name = self.config.newsletter.sender_name.clone();
-        let rate_limit = emails_per_minute.unwrap_or(10); // Default to 10 emails per minute
+        let rate_limit = emails_per_minute.unwrap_or(10);
+        let hmac_secret = self.get_hmac_secret()?;
 
-        NewsletterSender::new(smtp_config, sender_name, rate_limit)
+        NewsletterSender::new(smtp_config, sender_name, rate_limit, hmac_secret)
     }
 
     /// Compose newsletter from latest blog post
@@ -382,14 +383,23 @@ impl NewsletterManager {
         let mut sender = self.create_sender(None)?;
 
         let password = if interactive {
-            self.prompt_for_password("SMTP")?
+            Self::prompt_for_password("SMTP")?
         } else {
             self.get_smtp_password()?
         };
 
-        let subscribers = self.database.get_subscribers(None)?;
+        // Only fetch approved subscribers
+        let subscribers = self
+            .database
+            .get_subscribers(Some(super::database::SubscriberStatus::Approved))?;
 
-        sender.send_to_subscribers(newsletter, &subscribers, &password, None)
+        sender.send_to_subscribers(
+            newsletter,
+            &subscribers,
+            &password,
+            Some(&self.database),
+            None,
+        )
     }
 
     /// Send test newsletter
@@ -402,7 +412,7 @@ impl NewsletterManager {
         let mut sender = self.create_sender(None)?;
 
         let password = if interactive {
-            self.prompt_for_password("SMTP")?
+            Self::prompt_for_password("SMTP")?
         } else {
             self.get_smtp_password()?
         };
