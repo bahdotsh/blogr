@@ -307,7 +307,15 @@ async fn handle_unsubscribe(
     State(state): State<ApiState>,
     Query(params): Query<UnsubscribeQuery>,
 ) -> Html<String> {
-    let hmac_secret = get_hmac_secret(&state);
+    let hmac_secret = match get_hmac_secret(&state) {
+        Ok(s) => s,
+        Err(_) => {
+            return Html(
+                "<html><body><h2>Error</h2><p>Server configuration error.</p></body></html>"
+                    .to_string(),
+            )
+        }
+    };
     if !sender::verify_unsubscribe_token(&params.email, &params.token, &hmac_secret) {
         return Html(
             "<html><body><h2>Invalid unsubscribe link</h2><p>This link is invalid or has expired.</p></body></html>"
@@ -340,7 +348,10 @@ async fn handle_unsubscribe_post(
     State(state): State<ApiState>,
     Query(params): Query<UnsubscribeQuery>,
 ) -> StatusCode {
-    let hmac_secret = get_hmac_secret(&state);
+    let hmac_secret = match get_hmac_secret(&state) {
+        Ok(s) => s,
+        Err(status) => return status,
+    };
     if !sender::verify_unsubscribe_token(&params.email, &params.token, &hmac_secret) {
         return StatusCode::FORBIDDEN;
     }
@@ -365,10 +376,17 @@ async fn handle_confirm(
         .database()
         .verify_confirmation_token(&params.token)
     {
-        Ok(Some(email)) => Html(format!(
-            "<html><body><h2>Confirmed!</h2><p>Your email address ({}) has been confirmed. You will now receive our newsletter.</p></body></html>",
-            email
-        )),
+        Ok(Some(email)) => {
+            let escaped_email = email
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;");
+            Html(format!(
+                "<html><body><h2>Confirmed!</h2><p>Your email address ({}) has been confirmed. You will now receive our newsletter.</p></body></html>",
+                escaped_email
+            ))
+        }
         Ok(None) => Html(
             "<html><body><h2>Invalid link</h2><p>This confirmation link is invalid or has expired.</p></body></html>"
                 .to_string(),
@@ -730,7 +748,12 @@ async fn update_subscriber_tags(
         }
     };
 
-    let id = subscriber.id.unwrap();
+    let id = subscriber.id.ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error("Subscriber has no ID".to_string())),
+        )
+    })?;
     let db = state.newsletter_manager.database();
 
     // Get current tags and remove ones not in the new set
@@ -790,8 +813,12 @@ async fn get_subscriber_tags(
     match state
         .newsletter_manager
         .database()
-        .get_tags(subscriber.id.unwrap())
-    {
+        .get_tags(subscriber.id.ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error("Subscriber has no ID".to_string())),
+            )
+        })?) {
         Ok(tags) => Ok(Json(ApiResponse::success(tags))),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -865,12 +892,15 @@ async fn get_bounces(
     }
 }
 
-/// Get the HMAC secret from the newsletter manager
-fn get_hmac_secret(_state: &ApiState) -> String {
-    std::env::var("NEWSLETTER_HMAC_SECRET").unwrap_or_else(|_| {
+/// Get the HMAC secret from environment variables.
+/// Returns an error if neither NEWSLETTER_HMAC_SECRET nor NEWSLETTER_SMTP_PASSWORD is set.
+fn get_hmac_secret(_state: &ApiState) -> Result<String, StatusCode> {
+    std::env::var("NEWSLETTER_HMAC_SECRET").or_else(|_| {
         std::env::var("NEWSLETTER_SMTP_PASSWORD")
             .map(|p| format!("blogr-newsletter-{}", p))
-            .unwrap_or_else(|_| "default-hmac-secret".to_string())
+    }).map_err(|_| {
+        eprintln!("HMAC secret not configured: set NEWSLETTER_HMAC_SECRET or NEWSLETTER_SMTP_PASSWORD");
+        StatusCode::INTERNAL_SERVER_ERROR
     })
 }
 

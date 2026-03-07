@@ -572,7 +572,11 @@ impl NewsletterSender {
 
         let mut builder = SmtpTransport::relay(&self.smtp_config.server)?;
 
-        if self.smtp_config.port == 465 || self.smtp_config.port == 587 {
+        let use_tls = self
+            .smtp_config
+            .use_tls
+            .unwrap_or(self.smtp_config.port == 465 || self.smtp_config.port == 587);
+        if use_tls {
             builder = builder.tls(Tls::Required(TlsParameters::new(
                 self.smtp_config.server.clone(),
             )?));
@@ -764,7 +768,10 @@ fn create_async_smtp_transport(
 
     let mut builder = AsyncSmtpTransport::<Tokio1Executor>::relay(&smtp_config.server)?;
 
-    if smtp_config.port == 465 || smtp_config.port == 587 {
+    let use_tls = smtp_config
+        .use_tls
+        .unwrap_or(smtp_config.port == 465 || smtp_config.port == 587);
+    if use_tls {
         builder = builder.tls(Tls::Required(TlsParameters::new(
             smtp_config.server.clone(),
         )?));
