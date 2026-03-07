@@ -206,6 +206,8 @@ fn start_file_watcher(
     Console::info("Watching for file changes...");
 
     let rebuilding = Arc::new(AtomicBool::new(false));
+    // Canonicalize output_dir to prevent symlink mismatches in path filtering
+    let canonical_output_dir = output_dir.canonicalize().unwrap_or(output_dir);
 
     // Bridge sync notify events to async rebuild loop
     let (async_tx, mut async_rx) = tokio::sync::mpsc::channel::<()>(1);
@@ -217,7 +219,12 @@ fn start_file_watcher(
                 Ok(Ok(events)) => {
                     // Filter out events in the output directory
                     let relevant = events.iter().any(|e| {
-                        e.kind == DebouncedEventKind::Any && !e.path.starts_with(&output_dir)
+                        e.kind == DebouncedEventKind::Any
+                            && !e
+                                .path
+                                .canonicalize()
+                                .unwrap_or_else(|_| e.path.clone())
+                                .starts_with(&canonical_output_dir)
                     });
                     if relevant {
                         let _ = async_tx.try_send(());
@@ -231,47 +238,71 @@ fn start_file_watcher(
         }
     });
 
-    let rebuilding_clone = rebuilding.clone();
+    let dirty = Arc::new(AtomicBool::new(false));
+    let dirty_clone = dirty.clone();
     tokio::spawn(async move {
         while async_rx.recv().await.is_some() {
-            if rebuilding_clone
+            // Mark dirty so back-to-back events are coalesced
+            dirty_clone.store(true, Ordering::SeqCst);
+
+            if rebuilding
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                 .is_err()
             {
-                continue; // Skip if already rebuilding
+                continue; // Already rebuilding; dirty flag ensures a follow-up
             }
 
-            let project = project.clone();
-            let rebuilding = rebuilding_clone.clone();
-            let reload_tx = reload_tx.clone();
+            loop {
+                dirty_clone.store(false, Ordering::SeqCst);
 
-            tokio::task::spawn_blocking(move || {
-                Console::info("File changed, rebuilding...");
-                match project.load_config() {
-                    Ok(config) => {
-                        let out = config
-                            .build
-                            .output_dir
-                            .as_ref()
-                            .map(|p| project.root.join(p))
-                            .unwrap_or_else(|| project.root.join("_site"));
-                        match SiteBuilder::new(project, Some(out), drafts, false) {
-                            Ok(builder) => match builder.build() {
-                                Ok(()) => {
-                                    Console::success("Rebuild complete");
-                                    let _ = reload_tx.send(());
+                let project = project.clone();
+                let reload_tx = reload_tx.clone();
+
+                let build_ok = tokio::task::spawn_blocking(move || {
+                    Console::info("File changed, rebuilding...");
+                    match project.load_config() {
+                        Ok(config) => {
+                            let out = config
+                                .build
+                                .output_dir
+                                .as_ref()
+                                .map(|p| project.root.join(p))
+                                .unwrap_or_else(|| project.root.join("_site"));
+                            match SiteBuilder::new(project, Some(out), drafts, false) {
+                                Ok(builder) => match builder.build() {
+                                    Ok(()) => {
+                                        Console::success("Rebuild complete");
+                                        let _ = reload_tx.send(());
+                                        true
+                                    }
+                                    Err(e) => {
+                                        Console::error(&format!("Rebuild failed: {}", e));
+                                        false
+                                    }
+                                },
+                                Err(e) => {
+                                    Console::error(&format!("Rebuild failed: {}", e));
+                                    false
                                 }
-                                Err(e) => Console::error(&format!("Rebuild failed: {}", e)),
-                            },
-                            Err(e) => Console::error(&format!("Rebuild failed: {}", e)),
+                            }
+                        }
+                        Err(e) => {
+                            Console::error(&format!("Failed to load config: {}", e));
+                            false
                         }
                     }
-                    Err(e) => Console::error(&format!("Failed to load config: {}", e)),
+                })
+                .await
+                .unwrap_or(false);
+
+                // If new changes arrived during the rebuild, rebuild again
+                if !dirty_clone.load(Ordering::SeqCst) || !build_ok {
+                    break;
                 }
-                rebuilding.store(false, Ordering::SeqCst);
-            })
-            .await
-            .ok();
+                Console::info("Changes detected during rebuild, rebuilding again...");
+            }
+
+            rebuilding.store(false, Ordering::SeqCst);
         }
     });
 
