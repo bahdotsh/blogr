@@ -34,7 +34,7 @@ pub fn render_markdown(markdown: &str) -> Result<String> {
                     CodeBlockKind::Indented => String::new(),
                 };
                 let class_attr = if !lang.is_empty() {
-                    format!(" class=\"language-{}\"", html_escape(&lang))
+                    format!(" class=\"language-{}\"", html_escape(&lang).replace(' ', "-"))
                 } else {
                     String::new()
                 };
@@ -77,7 +77,10 @@ fn highlight_code(code: &str, language: &str) -> Result<String> {
         .or_else(|| SYNTAX_SET.find_syntax_by_extension(language))
         .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
 
-    let theme = &THEME_SET.themes["base16-ocean.dark"];
+    let theme = THEME_SET
+        .themes
+        .get("base16-ocean.dark")
+        .ok_or_else(|| anyhow::anyhow!("default theme 'base16-ocean.dark' not found"))?;
     let mut highlighter = HighlightLines::new(syntax, theme);
     let mut output = String::new();
     for line in LinesWithEndings::from(code) {
