@@ -4,11 +4,11 @@
   <link href="https://example.com"/>
   <link href="https://example.com/atom.xml" rel="self"/>
   <id>https://example.com</id>
-  <updated>2026-03-07T05:34:03+0000</updated>
+  <updated>2026-03-07T05:56:08+0000</updated>
   <subtitle><![CDATA[A sample project demonstrating syntax highlighting in code blocks]]></subtitle>
   <generator>Blogr Static Site Generator</generator>
   <entry>
-    <title><![CDATA[Syntax Highlighting Showcase]]></title>
+    <title><![CDATA[Syntax Highlighting Showca]]></title>
     <link href="https://example.com/posts/syntax-highlighting-showcase.html"/>
     <id>https://example.com/posts/syntax-highlighting-showcase.html</id>
     <updated>2026-03-07T00:00:00+0000</updated>
