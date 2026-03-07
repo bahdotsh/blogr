@@ -480,7 +480,7 @@ fn export_json(subscribers: &[crate::newsletter::Subscriber]) -> Result<String> 
 }
 
 /// Handle the send latest post command
-pub async fn handle_send_latest(interactive: bool) -> Result<()> {
+pub async fn handle_send_latest(interactive: bool, tag: Option<&str>) -> Result<()> {
     let project = Project::find_project()?
         .ok_or_else(|| anyhow::anyhow!("Not in a blogr project. Run 'blogr init' first."))?;
 
@@ -530,7 +530,7 @@ pub async fn handle_send_latest(interactive: bool) -> Result<()> {
     // Send newsletter
     println!("📤 Sending newsletter...");
     let report = newsletter_manager
-        .send_newsletter(&newsletter, interactive)
+        .send_newsletter_with_tag(&newsletter, interactive, tag)
         .await?;
 
     println!("✅ Newsletter sending completed!");
@@ -540,7 +540,12 @@ pub async fn handle_send_latest(interactive: bool) -> Result<()> {
 }
 
 /// Handle the send custom newsletter command
-pub async fn handle_send_custom(subject: String, content: String, interactive: bool) -> Result<()> {
+pub async fn handle_send_custom(
+    subject: String,
+    content: String,
+    interactive: bool,
+    tag: Option<&str>,
+) -> Result<()> {
     let project = Project::find_project()?
         .ok_or_else(|| anyhow::anyhow!("Not in a blogr project. Run 'blogr init' first."))?;
 
@@ -575,7 +580,7 @@ pub async fn handle_send_custom(subject: String, content: String, interactive: b
     // Send newsletter
     println!("📤 Sending newsletter...");
     let report = newsletter_manager
-        .send_newsletter(&newsletter, interactive)
+        .send_newsletter_with_tag(&newsletter, interactive, tag)
         .await?;
 
     println!("✅ Newsletter sending completed!");
@@ -1034,6 +1039,115 @@ pub async fn handle_plugin_run(command: &str, args: &[String]) -> Result<()> {
             return Err(e);
         }
     }
+
+    Ok(())
+}
+
+/// Handle the cleanup command
+pub async fn handle_cleanup(days: u32) -> Result<()> {
+    let project = Project::find_project()?
+        .ok_or_else(|| anyhow::anyhow!("Not in a blogr project. Run 'blogr init' first."))?;
+
+    let config = project
+        .load_config()
+        .context("Failed to load project configuration")?;
+    let newsletter_manager = NewsletterManager::new(config, &project.root)?;
+
+    if !newsletter_manager.is_enabled() {
+        println!("Newsletter functionality is not enabled.");
+        return Ok(());
+    }
+
+    let db = newsletter_manager.database();
+
+    let recipients_deleted = db.cleanup_old_send_recipients(days)?;
+    println!(
+        "Cleaned up {} send recipient records older than {} days",
+        recipients_deleted, days
+    );
+
+    let queue_deleted = db.cleanup_completed_send_queue()?;
+    println!("Cleaned up {} completed send queue items", queue_deleted);
+
+    Ok(())
+}
+
+/// Handle the tag command
+pub async fn handle_tag(email: &str, add: Option<&str>, remove: Option<&str>) -> Result<()> {
+    let project = Project::find_project()?
+        .ok_or_else(|| anyhow::anyhow!("Not in a blogr project. Run 'blogr init' first."))?;
+
+    let config = project
+        .load_config()
+        .context("Failed to load project configuration")?;
+    let newsletter_manager = NewsletterManager::new(config, &project.root)?;
+
+    if !newsletter_manager.is_enabled() {
+        println!("Newsletter functionality is not enabled.");
+        return Ok(());
+    }
+
+    let db = newsletter_manager.database();
+
+    let subscriber = db
+        .get_subscriber_by_email(email)?
+        .ok_or_else(|| anyhow::anyhow!("Subscriber '{}' not found", email))?;
+
+    let id = subscriber.id.unwrap();
+
+    if let Some(tag) = add {
+        db.add_tag(id, tag)?;
+        println!("Added tag '{}' to {}", tag, email);
+    }
+
+    if let Some(tag) = remove {
+        if db.remove_tag(id, tag)? {
+            println!("Removed tag '{}' from {}", tag, email);
+        } else {
+            println!("Tag '{}' not found on {}", tag, email);
+        }
+    }
+
+    // Show current tags
+    let tags = db.get_tags(id)?;
+    if tags.is_empty() {
+        println!("No tags for {}", email);
+    } else {
+        println!("Current tags for {}: {}", email, tags.join(", "));
+    }
+
+    Ok(())
+}
+
+/// Handle the tags list command
+pub async fn handle_tags() -> Result<()> {
+    let project = Project::find_project()?
+        .ok_or_else(|| anyhow::anyhow!("Not in a blogr project. Run 'blogr init' first."))?;
+
+    let config = project
+        .load_config()
+        .context("Failed to load project configuration")?;
+    let newsletter_manager = NewsletterManager::new(config, &project.root)?;
+
+    if !newsletter_manager.is_enabled() {
+        println!("Newsletter functionality is not enabled.");
+        return Ok(());
+    }
+
+    let tags = newsletter_manager.database().get_all_tags()?;
+
+    if tags.is_empty() {
+        println!("No tags found.");
+        println!("Use 'blogr newsletter tag <email> --add <tag>' to add tags.");
+        return Ok(());
+    }
+
+    println!("{:<30} {:<10}", "Tag", "Count");
+    println!("{}", "-".repeat(40));
+    for (tag, count) in &tags {
+        println!("{:<30} {:<10}", tag, count);
+    }
+    println!("\nTotal: {} tags", tags.len());
 
     Ok(())
 }
