@@ -32,7 +32,7 @@ walkdir = { workspace = true }
 uuid = { version = "1.21", features = ["v4"] }
 axum = "0.8"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["fs"] }
+tower-http = { version = "0.6", features = ["fs", "cors"] }
 url = "2.5"
 serde_json = "1.0"
 serde_yaml = "0.9"
@@ -51,6 +51,11 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 lettre = "0.11"
 html2text = "0.6"
 css-inline = "0.18"
+rpassword = "5.0"
+base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 tempfile = "3.25"

@@ -64,8 +64,7 @@ pub struct NewsletterComposer {
 impl NewsletterComposer {
     /// Create a new newsletter composer
     pub fn new(theme: Box<dyn Theme>, config: Config) -> Result<Self> {
-        let mut tera = Tera::new("templates/**/*.html")
-            .map_err(|e| anyhow::anyhow!("Failed to initialize template engine: {}", e))?;
+        let mut tera = Tera::default();
 
         // Register email templates
         let email_base_template = include_str!("../templates/email/base.html");

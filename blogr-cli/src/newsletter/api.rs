@@ -5,9 +5,10 @@
 
 use anyhow::{Context, Result};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query, Request, State},
     http::StatusCode,
-    response::Json,
+    middleware::{self, Next},
+    response::{Json, Response},
     routing::{delete, get, post, put},
     Router,
 };
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-// use tower_http::cors::{Any, CorsLayer}; // Commented out - requires tower-http with cors feature
+use tower_http::cors::{Any, CorsLayer};
 
 use super::{NewsletterManager, Subscriber, SubscriberStatus};
 use crate::config::Config;
@@ -38,7 +39,7 @@ impl Default for ApiConfig {
             port: 3001,
             api_key: None,
             cors_enabled: true,
-            rate_limit: Some(100), // 100 requests per minute
+            rate_limit: Some(100),
         }
     }
 }
@@ -53,7 +54,7 @@ pub struct ApiState {
 }
 
 /// API response wrapper
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ApiResponse<T> {
     pub success: bool,
     pub data: Option<T>,
@@ -70,9 +71,10 @@ impl<T> ApiResponse<T> {
             timestamp: chrono::Utc::now(),
         }
     }
+}
 
-    #[allow(dead_code)]
-    pub fn error(message: String) -> ApiResponse<()> {
+impl ApiResponse<()> {
+    pub fn error(message: String) -> Self {
         ApiResponse {
             success: false,
             data: None,
@@ -105,33 +107,13 @@ pub struct UpdateSubscriberRequest {
     pub notes: Option<String>,
 }
 
-/// Newsletter sending request
-#[derive(Deserialize)]
-#[allow(dead_code)]
-pub struct SendNewsletterRequest {
-    pub subject: String,
-    pub content: String,
-    pub test_mode: Option<bool>,
-    pub test_email: Option<String>,
-}
-
-/// Import request
-#[derive(Deserialize)]
-#[allow(dead_code)]
-pub struct ImportRequest {
-    pub source: String,
-    pub data: serde_json::Value, // CSV data as string or JSON array
-    pub preview_only: Option<bool>,
-    pub column_mappings: Option<HashMap<String, String>>,
-}
-
 /// Statistics response
 #[derive(Serialize)]
 pub struct StatsResponse {
-    pub total_subscribers: usize,
-    pub approved_subscribers: usize,
-    pub pending_subscribers: usize,
-    pub declined_subscribers: usize,
+    pub total_subscribers: i64,
+    pub approved_subscribers: i64,
+    pub pending_subscribers: i64,
+    pub declined_subscribers: i64,
 }
 
 /// Newsletter API server
@@ -178,36 +160,91 @@ impl NewsletterApiServer {
 
     /// Create the router with all endpoints
     fn create_router(self) -> Router {
-        Router::new()
-            // Health check
+        let api_key = self.state.api_config.api_key.clone();
+        let cors_enabled = self.state.api_config.cors_enabled;
+
+        let mut app = Router::new()
+            // Health check (no auth required)
             .route("/health", get(health_check))
             // Subscriber management
             .route("/subscribers", get(list_subscribers))
             .route("/subscribers", post(create_subscriber))
-            .route("/subscribers/:email", get(get_subscriber))
-            .route("/subscribers/:email", put(update_subscriber))
-            .route("/subscribers/:email", delete(delete_subscriber))
-            // Newsletter operations
-            .route("/newsletter/send", post(send_newsletter))
-            .route("/newsletter/send-latest", post(send_latest_post))
-            .route("/newsletter/preview", post(preview_newsletter))
+            .route("/subscribers/{email}", get(get_subscriber))
+            .route("/subscribers/{email}", put(update_subscriber))
+            .route("/subscribers/{email}", delete(delete_subscriber))
             // Import/export
-            .route("/import", post(import_subscribers))
             .route("/export", get(export_subscribers))
             // Statistics
             .route("/stats", get(get_stats))
-            .with_state(self.state)
+            .with_state(self.state);
 
-        // Add CORS if enabled (commented out - requires tower-http with cors feature)
-        // if self.state.api_config.cors_enabled {
-        //     app = app.layer(
-        //         CorsLayer::new()
-        //             .allow_origin(Any)
-        //             .allow_methods(Any)
-        //             .allow_headers(Any),
-        //     );
-        // }
+        // Add API key authentication middleware if configured
+        if let Some(key) = api_key {
+            let key = Arc::new(key);
+            app = app.layer(middleware::from_fn(move |req, next| {
+                let key = Arc::clone(&key);
+                auth_middleware(req, next, key)
+            }));
+        }
+
+        // Add CORS if enabled
+        if cors_enabled {
+            app = app.layer(
+                CorsLayer::new()
+                    .allow_origin(Any)
+                    .allow_methods(Any)
+                    .allow_headers(Any),
+            );
+        }
+
+        app
     }
+}
+
+/// Authentication middleware that checks for a valid API key
+async fn auth_middleware(req: Request, next: Next, api_key: Arc<String>) -> Response {
+    // Allow health check without auth
+    if req.uri().path() == "/health" {
+        return next.run(req).await;
+    }
+
+    let auth_header = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok());
+
+    match auth_header {
+        Some(header)
+            if header
+                .strip_prefix("Bearer ")
+                .is_some_and(|token| token == api_key.as_str()) =>
+        {
+            next.run(req).await
+        }
+        _ => {
+            let body = serde_json::to_string(&ApiResponse::<()>::error(
+                "Unauthorized: invalid or missing API key".to_string(),
+            ))
+            .unwrap_or_default();
+
+            Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body))
+                .unwrap()
+        }
+    }
+}
+
+/// Basic email format validation
+fn is_valid_email(email: &str) -> bool {
+    email.contains('@')
+        && email.contains('.')
+        && !email.starts_with('@')
+        && !email.ends_with('@')
+        && email.len() > 5
+        && email.len() < 255
+        && !email.contains(' ')
 }
 
 /// Health check endpoint
@@ -224,7 +261,7 @@ async fn health_check() -> Json<ApiResponse<HashMap<String, String>>> {
 async fn list_subscribers(
     State(state): State<ApiState>,
     Query(params): Query<SubscriberQuery>,
-) -> Result<Json<ApiResponse<Vec<Subscriber>>>, StatusCode> {
+) -> Result<Json<ApiResponse<Vec<Subscriber>>>, (StatusCode, Json<ApiResponse<()>>)> {
     let status_filter = params
         .status
         .as_deref()
@@ -238,27 +275,18 @@ async fn list_subscribers(
     match state
         .newsletter_manager
         .database()
-        .get_subscribers(status_filter)
+        .get_subscribers_paginated(status_filter, params.limit, params.offset)
     {
-        Ok(mut subscribers) => {
-            // Apply pagination
-            if let Some(offset) = params.offset {
-                if offset < subscribers.len() {
-                    subscribers = subscribers.into_iter().skip(offset).collect();
-                } else {
-                    subscribers = Vec::new();
-                }
-            }
-
-            if let Some(limit) = params.limit {
-                subscribers.truncate(limit);
-            }
-
-            Ok(Json(ApiResponse::success(subscribers)))
-        }
+        Ok(subscribers) => Ok(Json(ApiResponse::success(subscribers))),
         Err(e) => {
             eprintln!("Failed to list subscribers: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!(
+                    "Failed to list subscribers: {}",
+                    e
+                ))),
+            ))
         }
     }
 }
@@ -267,13 +295,24 @@ async fn list_subscribers(
 async fn create_subscriber(
     State(state): State<ApiState>,
     Json(request): Json<CreateSubscriberRequest>,
-) -> Result<Json<ApiResponse<Subscriber>>, StatusCode> {
+) -> Result<Json<ApiResponse<Subscriber>>, (StatusCode, Json<ApiResponse<()>>)> {
+    if !is_valid_email(&request.email) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::error(format!(
+                "Invalid email format: {}",
+                request.email
+            ))),
+        ));
+    }
+
     let subscriber = Subscriber {
-        id: Some(0_i64), // Will be set by database
+        id: None,
         email: request.email,
         status: request.status.unwrap_or(SubscriberStatus::Pending),
         subscribed_at: chrono::Utc::now(),
         approved_at: None,
+        declined_at: None,
         source_email_id: Some("api".to_string()),
         notes: request.notes,
     };
@@ -284,26 +323,42 @@ async fn create_subscriber(
         .add_subscriber(&subscriber)
     {
         Ok(_) => {
-            // Fetch the created subscriber to get the ID
             match state
                 .newsletter_manager
                 .database()
                 .get_subscriber_by_email(&subscriber.email)
             {
                 Ok(Some(created_subscriber)) => Ok(Json(ApiResponse::success(created_subscriber))),
-                Ok(None) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+                Ok(None) => Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiResponse::error(
+                        "Failed to retrieve created subscriber".to_string(),
+                    )),
+                )),
                 Err(e) => {
                     eprintln!("Failed to fetch created subscriber: {}", e);
-                    Err(StatusCode::INTERNAL_SERVER_ERROR)
+                    Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiResponse::error(format!("Database error: {}", e))),
+                    ))
                 }
             }
         }
         Err(e) => {
             eprintln!("Failed to create subscriber: {}", e);
             if e.to_string().contains("UNIQUE constraint failed") {
-                Err(StatusCode::CONFLICT)
+                Err((
+                    StatusCode::CONFLICT,
+                    Json(ApiResponse::error("Subscriber already exists".to_string())),
+                ))
             } else {
-                Err(StatusCode::INTERNAL_SERVER_ERROR)
+                Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiResponse::error(format!(
+                        "Failed to create subscriber: {}",
+                        e
+                    ))),
+                ))
             }
         }
     }
@@ -313,17 +368,26 @@ async fn create_subscriber(
 async fn get_subscriber(
     State(state): State<ApiState>,
     Path(email): Path<String>,
-) -> Result<Json<ApiResponse<Subscriber>>, StatusCode> {
+) -> Result<Json<ApiResponse<Subscriber>>, (StatusCode, Json<ApiResponse<()>>)> {
     match state
         .newsletter_manager
         .database()
         .get_subscriber_by_email(&email)
     {
         Ok(Some(subscriber)) => Ok(Json(ApiResponse::success(subscriber))),
-        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse::error(format!(
+                "Subscriber '{}' not found",
+                email
+            ))),
+        )),
         Err(e) => {
             eprintln!("Failed to get subscriber: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!("Database error: {}", e))),
+            ))
         }
     }
 }
@@ -333,26 +397,50 @@ async fn update_subscriber(
     State(state): State<ApiState>,
     Path(email): Path<String>,
     Json(request): Json<UpdateSubscriberRequest>,
-) -> Result<Json<ApiResponse<Subscriber>>, StatusCode> {
-    // First, get the existing subscriber
+) -> Result<Json<ApiResponse<Subscriber>>, (StatusCode, Json<ApiResponse<()>>)> {
     let mut subscriber = match state
         .newsletter_manager
         .database()
         .get_subscriber_by_email(&email)
     {
         Ok(Some(subscriber)) => subscriber,
-        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse::error(format!(
+                    "Subscriber '{}' not found",
+                    email
+                ))),
+            ))
+        }
         Err(e) => {
             eprintln!("Failed to get subscriber: {}", e);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!("Database error: {}", e))),
+            ));
         }
     };
 
-    // Update fields
     if let Some(status) = request.status {
-        subscriber.status = status.clone();
-        if status == SubscriberStatus::Approved && subscriber.approved_at.is_none() {
-            subscriber.approved_at = Some(chrono::Utc::now());
+        match status {
+            SubscriberStatus::Approved => {
+                subscriber.status = SubscriberStatus::Approved;
+                if subscriber.approved_at.is_none() {
+                    subscriber.approved_at = Some(chrono::Utc::now());
+                }
+            }
+            SubscriberStatus::Declined => {
+                subscriber.status = SubscriberStatus::Declined;
+                if subscriber.declined_at.is_none() {
+                    subscriber.declined_at = Some(chrono::Utc::now());
+                }
+            }
+            SubscriberStatus::Pending => {
+                subscriber.status = SubscriberStatus::Pending;
+                subscriber.approved_at = None;
+                subscriber.declined_at = None;
+            }
         }
     }
 
@@ -360,138 +448,86 @@ async fn update_subscriber(
         subscriber.notes = Some(notes);
     }
 
-    // Save changes (commented out - update_subscriber method needs to be implemented)
-    // match state
-    //     .newsletter_manager
-    //     .database()
-    //     .update_subscriber(&subscriber)
-    // {
-    //     Ok(_) => Ok(Json(ApiResponse::success(subscriber))),
-    //     Err(e) => {
-    //         eprintln!("Failed to update subscriber: {}", e);
-    //         Err(StatusCode::INTERNAL_SERVER_ERROR)
-    //     }
-    // }
-
-    // Temporary placeholder response
-    Ok(Json(ApiResponse::success(subscriber)))
+    match state
+        .newsletter_manager
+        .database()
+        .update_subscriber(&subscriber)
+    {
+        Ok(_) => Ok(Json(ApiResponse::success(subscriber))),
+        Err(e) => {
+            eprintln!("Failed to update subscriber: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!(
+                    "Failed to update subscriber: {}",
+                    e
+                ))),
+            ))
+        }
+    }
 }
 
 /// Delete subscriber endpoint
 async fn delete_subscriber(
     State(state): State<ApiState>,
     Path(email): Path<String>,
-) -> Result<Json<ApiResponse<()>>, StatusCode> {
+) -> Result<Json<ApiResponse<()>>, (StatusCode, Json<ApiResponse<()>>)> {
     match state
         .newsletter_manager
         .database()
         .remove_subscriber(&email)
     {
         Ok(true) => Ok(Json(ApiResponse::success(()))),
-        Ok(false) => Err(StatusCode::NOT_FOUND),
+        Ok(false) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse::error(format!(
+                "Subscriber '{}' not found",
+                email
+            ))),
+        )),
         Err(e) => {
             eprintln!("Failed to delete subscriber: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!(
+                    "Failed to delete subscriber: {}",
+                    e
+                ))),
+            ))
         }
     }
-}
-
-/// Send newsletter endpoint
-async fn send_newsletter(
-    State(_state): State<ApiState>,
-    Json(_request): Json<SendNewsletterRequest>,
-) -> Result<Json<ApiResponse<HashMap<String, String>>>, StatusCode> {
-    // This would require more complex integration with the sending system
-    // For now, return a placeholder response
-    let mut response = HashMap::new();
-    response.insert(
-        "message".to_string(),
-        "Newsletter sending via API not yet implemented".to_string(),
-    );
-    Ok(Json(ApiResponse::success(response)))
-}
-
-/// Send latest post endpoint
-async fn send_latest_post(
-    State(_state): State<ApiState>,
-) -> Result<Json<ApiResponse<HashMap<String, String>>>, StatusCode> {
-    // This would require integration with the post system
-    let mut response = HashMap::new();
-    response.insert(
-        "message".to_string(),
-        "Latest post sending via API not yet implemented".to_string(),
-    );
-    Ok(Json(ApiResponse::success(response)))
-}
-
-/// Preview newsletter endpoint
-async fn preview_newsletter(
-    State(_state): State<ApiState>,
-    Json(_request): Json<SendNewsletterRequest>,
-) -> Result<Json<ApiResponse<HashMap<String, String>>>, StatusCode> {
-    // This would require newsletter composition
-    let mut response = HashMap::new();
-    response.insert(
-        "message".to_string(),
-        "Newsletter preview via API not yet implemented".to_string(),
-    );
-    Ok(Json(ApiResponse::success(response)))
-}
-
-/// Import subscribers endpoint
-async fn import_subscribers(
-    State(_state): State<ApiState>,
-    Json(_request): Json<ImportRequest>,
-) -> Result<Json<ApiResponse<HashMap<String, String>>>, StatusCode> {
-    // This would require integration with the migration system
-    let mut response = HashMap::new();
-    response.insert(
-        "message".to_string(),
-        "Import via API not yet implemented".to_string(),
-    );
-    Ok(Json(ApiResponse::success(response)))
 }
 
 /// Export subscribers endpoint
 async fn export_subscribers(
     State(state): State<ApiState>,
     Query(params): Query<SubscriberQuery>,
-) -> Result<Json<ApiResponse<Vec<Subscriber>>>, StatusCode> {
-    // Reuse the list_subscribers logic for export
+) -> Result<Json<ApiResponse<Vec<Subscriber>>>, (StatusCode, Json<ApiResponse<()>>)> {
     list_subscribers(State(state), Query(params)).await
 }
 
-/// Get statistics endpoint
+/// Get statistics endpoint (uses COUNT queries, not loading all subscribers)
 async fn get_stats(
     State(state): State<ApiState>,
-) -> Result<Json<ApiResponse<StatsResponse>>, StatusCode> {
-    let all_subscribers = match state.newsletter_manager.database().get_subscribers(None) {
-        Ok(subscribers) => subscribers,
-        Err(e) => {
-            eprintln!("Failed to get subscribers for stats: {}", e);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    };
+) -> Result<Json<ApiResponse<StatsResponse>>, (StatusCode, Json<ApiResponse<()>>)> {
+    let db = state.newsletter_manager.database();
 
-    let total_subscribers = all_subscribers.len();
-    let approved_subscribers = all_subscribers
-        .iter()
-        .filter(|s| s.status == SubscriberStatus::Approved)
-        .count();
-    let pending_subscribers = all_subscribers
-        .iter()
-        .filter(|s| s.status == SubscriberStatus::Pending)
-        .count();
-    let declined_subscribers = all_subscribers
-        .iter()
-        .filter(|s| s.status == SubscriberStatus::Declined)
-        .count();
+    let total = db.get_subscriber_count(None).unwrap_or(0);
+    let approved = db
+        .get_subscriber_count(Some(SubscriberStatus::Approved))
+        .unwrap_or(0);
+    let pending = db
+        .get_subscriber_count(Some(SubscriberStatus::Pending))
+        .unwrap_or(0);
+    let declined = db
+        .get_subscriber_count(Some(SubscriberStatus::Declined))
+        .unwrap_or(0);
 
     let stats = StatsResponse {
-        total_subscribers,
-        approved_subscribers,
-        pending_subscribers,
-        declined_subscribers,
+        total_subscribers: total,
+        approved_subscribers: approved,
+        pending_subscribers: pending,
+        declined_subscribers: declined,
     };
 
     Ok(Json(ApiResponse::success(stats)))
@@ -500,23 +536,20 @@ async fn get_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::newsletter::NewsletterDatabase;
     use tempfile::tempdir;
 
-    #[allow(dead_code)]
-    async fn create_test_state() -> ApiState {
+    async fn create_test_state() -> (ApiState, tempfile::TempDir) {
         let temp_dir = tempdir().unwrap();
-        let db_path = temp_dir.path().join("test.db");
-        let _database = NewsletterDatabase::open(&db_path).unwrap();
 
         let config = Config::default();
         let newsletter_manager = NewsletterManager::new(config.clone(), temp_dir.path()).unwrap();
 
-        ApiState {
+        let state = ApiState {
             newsletter_manager: Arc::new(newsletter_manager),
             config: Arc::new(config),
             api_config: Arc::new(ApiConfig::default()),
-        }
+        };
+        (state, temp_dir)
     }
 
     #[tokio::test]
@@ -526,17 +559,90 @@ mod tests {
         assert!(response.0.data.is_some());
     }
 
-    // #[tokio::test]
-    // async fn test_create_subscriber() {
-    //     let state = create_test_state().await;
+    #[test]
+    fn test_email_validation() {
+        assert!(is_valid_email("test@example.com"));
+        assert!(is_valid_email("user.name@domain.co.uk"));
+        assert!(!is_valid_email("invalid"));
+        assert!(!is_valid_email("@example.com"));
+        assert!(!is_valid_email("user@"));
+        assert!(!is_valid_email("has space@example.com"));
+        assert!(!is_valid_email(""));
+        assert!(!is_valid_email("ab@c"));
+    }
 
-    //     let request = CreateSubscriberRequest {
-    //         email: "test@example.com".to_string(),
-    //         status: Some(SubscriberStatus::Pending),
-    //         notes: Some("Test subscriber".to_string()),
-    //     };
+    #[tokio::test]
+    async fn test_create_and_get_subscriber() {
+        let (state, _dir) = create_test_state().await;
 
-    //     let result = create_subscriber(State(state), Json(request)).await;
-    //     assert!(result.is_ok());
-    // }
+        let request = CreateSubscriberRequest {
+            email: "test@example.com".to_string(),
+            status: Some(SubscriberStatus::Pending),
+            notes: Some("Test subscriber".to_string()),
+        };
+
+        let result = create_subscriber(State(state.clone()), Json(request)).await;
+        assert!(result.is_ok());
+
+        let get_result = get_subscriber(State(state), Path("test@example.com".to_string())).await;
+        assert!(get_result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_create_subscriber_invalid_email() {
+        let (state, _dir) = create_test_state().await;
+
+        let request = CreateSubscriberRequest {
+            email: "not-an-email".to_string(),
+            status: None,
+            notes: None,
+        };
+
+        let result = create_subscriber(State(state), Json(request)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_update_subscriber() {
+        let (state, _dir) = create_test_state().await;
+
+        // Create first
+        let create_req = CreateSubscriberRequest {
+            email: "update@example.com".to_string(),
+            status: None,
+            notes: None,
+        };
+        let _ = create_subscriber(State(state.clone()), Json(create_req))
+            .await
+            .unwrap();
+
+        // Update
+        let update_req = UpdateSubscriberRequest {
+            status: Some(SubscriberStatus::Approved),
+            notes: Some("approved via api".to_string()),
+        };
+        let result = update_subscriber(
+            State(state.clone()),
+            Path("update@example.com".to_string()),
+            Json(update_req),
+        )
+        .await;
+        assert!(result.is_ok());
+
+        let sub = result.unwrap().0.data.unwrap();
+        assert_eq!(sub.status, SubscriberStatus::Approved);
+        assert!(sub.approved_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_stats_endpoint() {
+        let (state, _dir) = create_test_state().await;
+
+        let result = get_stats(State(state)).await;
+        assert!(result.is_ok());
+        let stats = result.unwrap().0.data.unwrap();
+        assert_eq!(stats.total_subscribers, 0);
+    }
 }

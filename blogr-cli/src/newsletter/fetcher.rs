@@ -44,7 +44,7 @@ impl EmailFetcher {
 
         self.session = Some(session);
         println!(
-            "✓ Connected to IMAP server: {}:{}",
+            "Connected to IMAP server: {}:{}",
             config.server, config.port
         );
 
@@ -227,38 +227,64 @@ impl EmailFetcher {
             && email.len() > 5
     }
 
+    /// Check if email looks like a subscription request (public wrapper)
+    pub fn is_subscription_email_public(&self, email: &FetchedEmail) -> bool {
+        self.is_subscription_email(email)
+    }
+
     /// Check if email looks like a subscription request
     fn is_subscription_email(&self, email: &FetchedEmail) -> bool {
         let subject_lower = email.subject.to_lowercase();
         let body_lower = email.body.to_lowercase();
 
-        // Look for subscription-related keywords
-        let subscription_keywords = [
+        // Look for subscription-related keywords in the subject primarily
+        let subject_keywords = [
             "subscribe",
             "subscription",
             "newsletter",
             "sign up",
             "signup",
-            "join",
             "mailing list",
-            "updates",
-            "notifications",
         ];
 
-        let unsubscribe_keywords = ["unsubscribe", "remove", "stop", "opt out", "opt-out"];
+        let unsubscribe_keywords = [
+            "unsubscribe",
+            "remove me",
+            "stop sending",
+            "opt out",
+            "opt-out",
+        ];
 
-        // Check for subscription keywords
-        let has_subscribe_keywords = subscription_keywords
-            .iter()
-            .any(|keyword| subject_lower.contains(keyword) || body_lower.contains(keyword));
-
-        // Check for unsubscribe keywords (we want to exclude these)
+        // Check for unsubscribe keywords first (takes priority)
         let has_unsubscribe_keywords = unsubscribe_keywords
             .iter()
             .any(|keyword| subject_lower.contains(keyword) || body_lower.contains(keyword));
 
-        // This is a subscription email if it has subscribe keywords but no unsubscribe keywords
-        has_subscribe_keywords && !has_unsubscribe_keywords
+        if has_unsubscribe_keywords {
+            return false;
+        }
+
+        // Subject is the primary signal for subscription intent
+        let subject_match = subject_keywords
+            .iter()
+            .any(|keyword| subject_lower.contains(keyword));
+
+        if subject_match {
+            return true;
+        }
+
+        // Body keywords alone are weaker signals - require stronger patterns
+        let body_intent_patterns = [
+            "i want to subscribe",
+            "please subscribe me",
+            "i'd like to subscribe",
+            "add me to",
+            "sign me up",
+        ];
+
+        body_intent_patterns
+            .iter()
+            .any(|pattern| body_lower.contains(pattern))
     }
 
     /// Mark processed emails as seen
@@ -282,7 +308,7 @@ impl EmailFetcher {
     pub fn process_subscribers(
         &self,
         emails: &[FetchedEmail],
-        database: &mut NewsletterDatabase,
+        database: &NewsletterDatabase,
     ) -> Result<Vec<Subscriber>> {
         let new_subscribers = self.extract_subscriber_emails(emails)?;
         let mut added_subscribers = Vec::new();
@@ -315,7 +341,7 @@ impl EmailFetcher {
             session
                 .logout()
                 .context("Failed to logout from IMAP server")?;
-            println!("✓ Disconnected from IMAP server");
+            println!("Disconnected from IMAP server");
         }
         Ok(())
     }
@@ -335,7 +361,6 @@ mod tests {
     fn test_email_address_extraction() {
         let fetcher = EmailFetcher::new();
 
-        // Test various email formats
         assert_eq!(
             fetcher.extract_email_address("john@example.com").unwrap(),
             "john@example.com"
@@ -407,5 +432,27 @@ mod tests {
         };
 
         assert!(!fetcher.is_subscription_email(&regular_email));
+
+        // An email mentioning "newsletter" casually in body shouldn't match
+        let casual_mention = FetchedEmail {
+            id: 4,
+            from: "john@example.com".to_string(),
+            subject: "Great blog".to_string(),
+            body: "I love your newsletter updates, keep it up!".to_string(),
+            date: None,
+        };
+
+        assert!(!fetcher.is_subscription_email(&casual_mention));
+
+        // Explicit intent in body should match
+        let explicit_intent = FetchedEmail {
+            id: 5,
+            from: "john@example.com".to_string(),
+            subject: "Hello".to_string(),
+            body: "I want to subscribe to your mailing list".to_string(),
+            date: None,
+        };
+
+        assert!(fetcher.is_subscription_email(&explicit_intent));
     }
 }
