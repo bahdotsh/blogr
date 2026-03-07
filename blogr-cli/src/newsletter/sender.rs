@@ -1,7 +1,11 @@
 //! SMTP email sending for newsletters
 //!
-//! This module handles sending newsletters via SMTP with rate limiting
-//! and progress tracking.
+//! This module handles sending newsletters via SMTP with:
+//! - Async concurrent sending with configurable parallelism
+//! - Token bucket rate limiting
+//! - Send queue for crash recovery and resume
+//! - Batch database writes for tracking
+//! - Efficient personalization (avoids full clone per subscriber)
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -9,18 +13,32 @@ use hmac::{Hmac, Mac};
 use lettre::message::{header, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
-use lettre::{Message, SmtpTransport, Transport};
+use lettre::{
+    AsyncSmtpTransport, AsyncTransport, Message, SmtpTransport, Tokio1Executor, Transport,
+};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 use subtle::ConstantTimeEq;
+use tokio::sync::Semaphore;
 
 use crate::config::SmtpConfig;
 use crate::newsletter::composer::Newsletter;
-use crate::newsletter::database::{NewsletterDatabase, Subscriber, SubscriberStatus};
+use crate::newsletter::database::{
+    NewsletterDatabase, SendQueueStatus, Subscriber, SubscriberStatus,
+};
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// Default batch size for processing subscribers
+const DEFAULT_BATCH_SIZE: usize = 1000;
+/// Default concurrent SMTP connections
+const DEFAULT_CONCURRENCY: usize = 10;
+/// Default emails per minute rate limit
+const DEFAULT_RATE_LIMIT: u32 = 100;
+/// Max retries for failed sends
+const MAX_RETRIES: i32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendReport {
@@ -30,6 +48,7 @@ pub struct SendReport {
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
     pub errors: Vec<SendError>,
+    pub resumed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +68,7 @@ impl SendReport {
             started_at: Utc::now(),
             completed_at: None,
             errors: Vec::new(),
+            resumed: false,
         }
     }
 
@@ -83,52 +103,74 @@ impl SendReport {
     }
 }
 
+/// Token bucket rate limiter — O(1) per check, no unbounded Vec growth
 pub struct RateLimiter {
-    emails_per_minute: u32,
-    last_send_times: Vec<Instant>,
+    emails_per_second: f64,
+    tokens: f64,
+    max_tokens: f64,
+    last_refill: tokio::time::Instant,
 }
 
 impl RateLimiter {
     pub fn new(emails_per_minute: u32) -> Self {
+        let per_second = emails_per_minute as f64 / 60.0;
+        // Allow burst of up to 1 second worth of tokens
+        let max_tokens = per_second.max(1.0);
         Self {
-            emails_per_minute,
-            last_send_times: Vec::new(),
+            emails_per_second: per_second,
+            tokens: max_tokens,
+            max_tokens,
+            last_refill: tokio::time::Instant::now(),
         }
     }
 
-    pub fn wait_if_needed(&mut self) {
-        let now = Instant::now();
-        let one_minute_ago = now - Duration::from_secs(60);
-
-        // Remove timestamps older than 1 minute
-        self.last_send_times.retain(|&time| time > one_minute_ago);
-
-        // If we've hit the rate limit, wait
-        if self.last_send_times.len() >= self.emails_per_minute as usize {
-            let oldest_send = self.last_send_times[0];
-            let wait_time = Duration::from_secs(60) - (now - oldest_send);
-            if wait_time > Duration::from_secs(0) {
-                println!(
-                    "Rate limit reached, waiting {} seconds...",
-                    wait_time.as_secs()
-                );
-                thread::sleep(wait_time);
+    /// Wait until a token is available, then consume it
+    pub async fn acquire(&mut self) {
+        loop {
+            self.refill();
+            if self.tokens >= 1.0 {
+                self.tokens -= 1.0;
+                return;
             }
+            // Wait for enough time to accumulate 1 token
+            let wait = Duration::from_secs_f64(1.0 / self.emails_per_second);
+            tokio::time::sleep(wait).await;
         }
     }
 
-    /// Record a send after it actually completes
-    pub fn record_send(&mut self) {
-        self.last_send_times.push(Instant::now());
+    fn refill(&mut self) {
+        let now = tokio::time::Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        self.tokens = (self.tokens + elapsed * self.emails_per_second).min(self.max_tokens);
+        self.last_refill = now;
+    }
+}
+
+/// Configuration for the sending pipeline
+#[derive(Debug, Clone)]
+pub struct SendConfig {
+    pub emails_per_minute: u32,
+    pub concurrency: usize,
+    pub batch_size: usize,
+    pub max_retries: i32,
+}
+
+impl Default for SendConfig {
+    fn default() -> Self {
+        Self {
+            emails_per_minute: DEFAULT_RATE_LIMIT,
+            concurrency: DEFAULT_CONCURRENCY,
+            batch_size: DEFAULT_BATCH_SIZE,
+            max_retries: MAX_RETRIES,
+        }
     }
 }
 
 pub struct NewsletterSender {
     smtp_config: SmtpConfig,
-    rate_limiter: RateLimiter,
     from_address: Mailbox,
-    /// Secret key for generating HMAC-based unsubscribe tokens
     hmac_secret: String,
+    send_config: SendConfig,
 }
 
 impl NewsletterSender {
@@ -146,13 +188,205 @@ impl NewsletterSender {
 
         Ok(Self {
             smtp_config,
-            rate_limiter: RateLimiter::new(emails_per_minute),
             from_address,
             hmac_secret,
+            send_config: SendConfig {
+                emails_per_minute,
+                ..Default::default()
+            },
         })
     }
 
-    /// Send newsletter to all approved subscribers, recording history in database
+    /// Set sending configuration
+    #[allow(dead_code)]
+    pub fn with_config(mut self, config: SendConfig) -> Self {
+        self.send_config = config;
+        self
+    }
+
+    /// Send newsletter using the send queue for resume support.
+    /// This is the primary high-performance sending method.
+    pub async fn send_with_queue(
+        &self,
+        newsletter: &Newsletter,
+        database: &NewsletterDatabase,
+        smtp_password: &str,
+        progress_callback: Option<Box<dyn Fn(usize, usize) + Send + Sync>>,
+    ) -> Result<SendReport> {
+        // Check for an incomplete send to resume
+        let (send_history_id, total, resumed) = match database.get_incomplete_send()? {
+            Some(id) => {
+                let (pending, sent, failed, retry) = database.get_send_queue_stats(id)?;
+                let total = pending + sent + failed + retry;
+                let remaining = pending + retry;
+                let subject = database.get_send_history_subject(id)?;
+                println!(
+                    "Resuming incomplete send '{}': {}/{} remaining",
+                    subject, remaining, total
+                );
+                (id, total, true)
+            }
+            None => {
+                // Create new send history and queue
+                let approved_count =
+                    database.get_subscriber_count(Some(SubscriberStatus::Approved))? as usize;
+                if approved_count == 0 {
+                    println!("No approved subscribers found");
+                    let mut report = SendReport::new(0);
+                    report.complete();
+                    return Ok(report);
+                }
+
+                let send_id = database.record_send(&newsletter.subject, approved_count, 0, 0)?;
+                let queued = database.create_send_queue(send_id)?;
+                println!("Sending newsletter to {} approved subscribers", queued);
+                (send_id, queued, false)
+            }
+        };
+
+        let mut report = SendReport::new(total);
+        report.resumed = resumed;
+
+        // Pre-compute the parts of the newsletter that don't change per subscriber
+        let newsletter = Arc::new(newsletter.clone());
+        let from_address = self.from_address.clone();
+        let smtp_config = self.smtp_config.clone();
+        let hmac_secret = self.hmac_secret.clone();
+
+        // Rate limiter shared across all tasks
+        let rate_limiter = Arc::new(tokio::sync::Mutex::new(RateLimiter::new(
+            self.send_config.emails_per_minute,
+        )));
+        let semaphore = Arc::new(Semaphore::new(self.send_config.concurrency));
+        let progress_callback = progress_callback.map(Arc::new);
+        let processed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        // If resuming, count already-sent items
+        if resumed {
+            let (_, sent, failed, _) = database.get_send_queue_stats(send_history_id)?;
+            report.successful_sends = sent;
+            report.failed_sends = failed;
+            processed.store(sent + failed, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        // Process the queue in batches
+        loop {
+            let batch =
+                database.get_send_queue_batch(send_history_id, self.send_config.batch_size)?;
+
+            if batch.is_empty() {
+                break;
+            }
+
+            let mut tasks = Vec::with_capacity(batch.len());
+
+            for item in batch {
+                // Skip items that have exceeded max retries
+                if item.attempts >= self.send_config.max_retries {
+                    database.update_send_queue_item(
+                        item.id,
+                        SendQueueStatus::Failed,
+                        Some("Max retries exceeded"),
+                    )?;
+                    report.add_error(
+                        item.subscriber_email.clone(),
+                        "Max retries exceeded".to_string(),
+                    );
+                    continue;
+                }
+
+                let permit = semaphore.clone().acquire_owned().await?;
+                let newsletter = Arc::clone(&newsletter);
+                let rate_limiter = Arc::clone(&rate_limiter);
+                let from_address = from_address.clone();
+                let smtp_config = smtp_config.clone();
+                let hmac_secret = hmac_secret.clone();
+                let smtp_password = smtp_password.to_string();
+                let progress_callback = progress_callback.clone();
+                let processed = Arc::clone(&processed);
+                let task_total = total;
+
+                let task = tokio::spawn(async move {
+                    // Rate limit
+                    rate_limiter.lock().await.acquire().await;
+
+                    let result = send_single_email_async(
+                        &smtp_config,
+                        &smtp_password,
+                        &from_address,
+                        &newsletter,
+                        &item.subscriber_email,
+                        &hmac_secret,
+                    )
+                    .await;
+
+                    let count = processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    if let Some(ref cb) = progress_callback {
+                        cb(count, task_total);
+                    }
+
+                    drop(permit);
+
+                    match result {
+                        Ok(()) => (item.id, item.subscriber_email, Ok(())),
+                        Err(e) => {
+                            let msg = format!("{}", e);
+                            (item.id, item.subscriber_email, Err(msg))
+                        }
+                    }
+                });
+
+                tasks.push(task);
+            }
+
+            // Collect results and batch-update the database
+            let mut db_updates: Vec<(i64, SendQueueStatus, Option<String>)> = Vec::new();
+            let mut recipient_records: Vec<(String, &str, Option<String>)> = Vec::new();
+
+            for task in tasks {
+                match task.await {
+                    Ok((item_id, email, Ok(()))) => {
+                        report.add_success();
+                        db_updates.push((item_id, SendQueueStatus::Sent, None));
+                        recipient_records.push((email, "sent", None));
+                    }
+                    Ok((item_id, email, Err(error_msg))) => {
+                        report.add_error(email.clone(), error_msg.clone());
+                        // Mark as retry if under max retries, otherwise failed
+                        db_updates.push((item_id, SendQueueStatus::Retry, Some(error_msg.clone())));
+                        recipient_records.push((email, "failed", Some(error_msg)));
+                    }
+                    Err(join_err) => {
+                        eprintln!("Task panicked: {}", join_err);
+                    }
+                }
+            }
+
+            // Batch write all updates
+            if !db_updates.is_empty() {
+                database.update_send_queue_items_batch(&db_updates)?;
+            }
+            if !recipient_records.is_empty() {
+                database.record_send_recipients_batch(send_history_id, &recipient_records)?;
+            }
+        }
+
+        // Update final send history
+        database.update_send_history(
+            send_history_id,
+            report.successful_sends,
+            report.failed_sends,
+        )?;
+
+        report.complete();
+        self.print_send_summary(&report);
+
+        Ok(report)
+    }
+
+    /// Send newsletter to all approved subscribers (legacy synchronous method)
+    /// Kept for backwards compatibility.
+    #[allow(dead_code)]
     pub fn send_to_subscribers(
         &mut self,
         newsletter: &Newsletter,
@@ -182,26 +416,45 @@ impl NewsletterSender {
         // Create SMTP transport
         let transport = self.create_smtp_transport(smtp_password)?;
 
-        for (index, subscriber) in approved_subscribers.iter().enumerate() {
-            // Rate limiting - check before send
-            self.rate_limiter.wait_if_needed();
+        // Use a simple synchronous token-bucket approach for the legacy path
+        let interval = if self.send_config.emails_per_minute > 0 {
+            Duration::from_secs_f64(60.0 / self.send_config.emails_per_minute as f64)
+        } else {
+            Duration::ZERO
+        };
 
-            // Generate unsubscribe token
+        for (index, subscriber) in approved_subscribers.iter().enumerate() {
+            if index > 0 && !interval.is_zero() {
+                std::thread::sleep(interval);
+            }
+
             let unsubscribe_token = self.generate_unsubscribe_token(&subscriber.email);
 
-            // Create personalized newsletter
-            let personalized_newsletter =
-                self.personalize_newsletter(newsletter, subscriber, &unsubscribe_token)?;
+            let personalized_html = personalize_content(
+                &newsletter.html_content,
+                &unsubscribe_token,
+                &self.smtp_config.username,
+            );
+            let personalized_text = personalize_content(
+                &newsletter.text_content,
+                &unsubscribe_token,
+                &self.smtp_config.username,
+            );
 
-            match self.send_single_email(&transport, &personalized_newsletter, subscriber) {
+            let personalized = Newsletter {
+                subject: newsletter.subject.clone(),
+                html_content: personalized_html,
+                text_content: personalized_text,
+                created_at: newsletter.created_at,
+                unsubscribe_token: Some(unsubscribe_token),
+            };
+
+            match self.send_single_email_sync(&transport, &personalized, subscriber) {
                 Ok(_) => {
-                    // Record send time after successful send
-                    self.rate_limiter.record_send();
                     report.add_success();
                     println!("Sent to {}", subscriber.email);
                 }
                 Err(e) => {
-                    self.rate_limiter.record_send();
                     let error_msg = format!("Failed to send to {}: {}", subscriber.email, e);
                     report.add_error(subscriber.email.clone(), error_msg.clone());
                     eprintln!("{}", error_msg);
@@ -223,14 +476,18 @@ impl NewsletterSender {
                 report.successful_sends,
                 report.failed_sends,
             ) {
-                for error in &report.errors {
-                    let _ = db.record_send_recipient(
-                        send_id,
-                        &error.subscriber_email,
-                        "failed",
-                        Some(&error.error_message),
-                    );
-                }
+                let results: Vec<(String, &str, Option<String>)> = report
+                    .errors
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.subscriber_email.clone(),
+                            "failed",
+                            Some(e.error_message.clone()),
+                        )
+                    })
+                    .collect();
+                let _ = db.record_send_recipients_batch(send_id, &results);
             }
         }
 
@@ -262,30 +519,39 @@ impl NewsletterSender {
         };
 
         let unsubscribe_token = self.generate_unsubscribe_token(test_email);
-        let personalized_newsletter =
-            self.personalize_newsletter(newsletter, &test_subscriber, &unsubscribe_token)?;
+        let personalized_html = personalize_content(
+            &newsletter.html_content,
+            &unsubscribe_token,
+            &self.smtp_config.username,
+        );
+        let personalized_text = personalize_content(
+            &newsletter.text_content,
+            &unsubscribe_token,
+            &self.smtp_config.username,
+        );
 
-        self.send_single_email(&transport, &personalized_newsletter, &test_subscriber)
+        let personalized = Newsletter {
+            subject: newsletter.subject.clone(),
+            html_content: personalized_html,
+            text_content: personalized_text,
+            created_at: newsletter.created_at,
+            unsubscribe_token: Some(unsubscribe_token),
+        };
+
+        self.send_single_email_sync(&transport, &personalized, &test_subscriber)
             .context("Failed to send test email")?;
 
         println!("Test email sent successfully");
         Ok(())
     }
 
-    /// Create SMTP transport
+    /// Create synchronous SMTP transport
     fn create_smtp_transport(&self, password: &str) -> Result<SmtpTransport> {
         let credentials = Credentials::new(self.smtp_config.username.clone(), password.to_string());
 
         let mut builder = SmtpTransport::relay(&self.smtp_config.server)?;
 
-        // Configure TLS - always use Required to prevent downgrade attacks
-        if self.smtp_config.port == 465 {
-            // SMTPS (implicit TLS)
-            builder = builder.tls(Tls::Required(TlsParameters::new(
-                self.smtp_config.server.clone(),
-            )?));
-        } else if self.smtp_config.port == 587 {
-            // SMTP with STARTTLS - must be Required to prevent plaintext fallback
+        if self.smtp_config.port == 465 || self.smtp_config.port == 587 {
             builder = builder.tls(Tls::Required(TlsParameters::new(
                 self.smtp_config.server.clone(),
             )?));
@@ -299,8 +565,8 @@ impl NewsletterSender {
         Ok(transport)
     }
 
-    /// Send a single email
-    fn send_single_email(
+    /// Send a single email (synchronous)
+    fn send_single_email_sync(
         &self,
         transport: &SmtpTransport,
         newsletter: &Newsletter,
@@ -337,54 +603,15 @@ impl NewsletterSender {
         Ok(())
     }
 
-    /// Personalize newsletter for a specific subscriber
-    fn personalize_newsletter(
-        &self,
-        newsletter: &Newsletter,
-        _subscriber: &Subscriber,
-        unsubscribe_token: &str,
-    ) -> Result<Newsletter> {
-        let mut personalized = newsletter.clone();
-
-        // Replace unsubscribe token in content
-        personalized.html_content = personalized
-            .html_content
-            .replace("{{unsubscribe_token}}", unsubscribe_token);
-        personalized.text_content = personalized
-            .text_content
-            .replace("{{unsubscribe_token}}", unsubscribe_token);
-
-        // Add personalized unsubscribe link
-        let unsubscribe_url = format!(
-            "mailto:{}?subject=Unsubscribe&body=Please unsubscribe me from the newsletter. Token: {}",
-            self.smtp_config.username,
-            unsubscribe_token
-        );
-
-        personalized.html_content = personalized
-            .html_content
-            .replace("{{unsubscribe_url}}", &unsubscribe_url);
-        personalized.text_content = personalized
-            .text_content
-            .replace("{{unsubscribe_url}}", &unsubscribe_url);
-
-        Ok(personalized)
-    }
-
     /// Generate cryptographically secure unsubscribe token using HMAC-SHA256
     fn generate_unsubscribe_token(&self, email: &str) -> String {
-        let mut mac = HmacSha256::new_from_slice(self.hmac_secret.as_bytes())
-            .expect("HMAC can take key of any size");
-        mac.update(email.as_bytes());
-        let result = mac.finalize();
-        hex::encode(result.into_bytes())
+        generate_unsubscribe_token_with_secret(email, &self.hmac_secret)
     }
 
     /// Verify an unsubscribe token against an email
     #[allow(dead_code)]
     pub fn verify_unsubscribe_token(&self, email: &str, token: &str) -> bool {
         let expected = self.generate_unsubscribe_token(email);
-        // Constant-time comparison to prevent timing attacks
         expected.as_bytes().ct_eq(token.as_bytes()).into()
     }
 
@@ -392,6 +619,9 @@ impl NewsletterSender {
     fn print_send_summary(&self, report: &SendReport) {
         println!("\nNewsletter Sending Summary");
         println!("===========================");
+        if report.resumed {
+            println!("Mode: Resumed from previous incomplete send");
+        }
         println!("Total subscribers: {}", report.total_subscribers);
         println!("Successful sends: {}", report.successful_sends);
         println!("Failed sends: {}", report.failed_sends);
@@ -400,16 +630,129 @@ impl NewsletterSender {
         if let Some(completed_at) = report.completed_at {
             let duration = completed_at - report.started_at;
             println!("Total time: {} seconds", duration.num_seconds());
+            if duration.num_seconds() > 0 {
+                let rate = report.successful_sends as f64 / duration.num_seconds() as f64;
+                println!("Throughput: {:.1} emails/second", rate);
+            }
         }
 
         if !report.errors.is_empty() {
-            println!("\nErrors:");
-            for error in &report.errors {
+            let display_count = report.errors.len().min(10);
+            println!(
+                "\nErrors (showing {}/{}):",
+                display_count,
+                report.errors.len()
+            );
+            for error in report.errors.iter().take(display_count) {
                 println!("  - {}: {}", error.subscriber_email, error.error_message);
+            }
+            if report.errors.len() > display_count {
+                println!(
+                    "  ... and {} more errors",
+                    report.errors.len() - display_count
+                );
             }
         }
         println!();
     }
+}
+
+/// Personalize content by replacing template tokens.
+/// This avoids cloning the entire Newsletter struct — only the content strings are modified.
+fn personalize_content(content: &str, unsubscribe_token: &str, smtp_username: &str) -> String {
+    let unsubscribe_url = format!(
+        "mailto:{}?subject=Unsubscribe&body=Please unsubscribe me from the newsletter. Token: {}",
+        smtp_username, unsubscribe_token
+    );
+
+    content
+        .replace("{{unsubscribe_token}}", unsubscribe_token)
+        .replace("{{unsubscribe_url}}", &unsubscribe_url)
+}
+
+/// Generate an unsubscribe token with a given secret (used by both sync and async paths)
+fn generate_unsubscribe_token_with_secret(email: &str, secret: &str) -> String {
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
+    mac.update(email.as_bytes());
+    let result = mac.finalize();
+    hex::encode(result.into_bytes())
+}
+
+/// Create an async SMTP transport
+fn create_async_smtp_transport(
+    smtp_config: &SmtpConfig,
+    password: &str,
+) -> Result<AsyncSmtpTransport<Tokio1Executor>> {
+    let credentials = Credentials::new(smtp_config.username.clone(), password.to_string());
+
+    let mut builder = AsyncSmtpTransport::<Tokio1Executor>::relay(&smtp_config.server)?;
+
+    if smtp_config.port == 465 || smtp_config.port == 587 {
+        builder = builder.tls(Tls::Required(TlsParameters::new(
+            smtp_config.server.clone(),
+        )?));
+    }
+
+    let transport = builder
+        .port(smtp_config.port)
+        .credentials(credentials)
+        .build();
+
+    Ok(transport)
+}
+
+/// Send a single email asynchronously (standalone function for use in spawned tasks)
+async fn send_single_email_async(
+    smtp_config: &SmtpConfig,
+    smtp_password: &str,
+    from_address: &Mailbox,
+    newsletter: &Newsletter,
+    subscriber_email: &str,
+    hmac_secret: &str,
+) -> Result<()> {
+    let to_address: Mailbox = subscriber_email
+        .parse()
+        .context("Failed to parse subscriber email address")?;
+
+    let unsubscribe_token = generate_unsubscribe_token_with_secret(subscriber_email, hmac_secret);
+    let html = personalize_content(
+        &newsletter.html_content,
+        &unsubscribe_token,
+        &smtp_config.username,
+    );
+    let text = personalize_content(
+        &newsletter.text_content,
+        &unsubscribe_token,
+        &smtp_config.username,
+    );
+
+    let email = Message::builder()
+        .from(from_address.clone())
+        .to(to_address)
+        .subject(&newsletter.subject)
+        .multipart(
+            MultiPart::alternative()
+                .singlepart(
+                    SinglePart::builder()
+                        .header(header::ContentType::TEXT_PLAIN)
+                        .body(text),
+                )
+                .singlepart(
+                    SinglePart::builder()
+                        .header(header::ContentType::TEXT_HTML)
+                        .body(html),
+                ),
+        )
+        .context("Failed to build email message")?;
+
+    let transport = create_async_smtp_transport(smtp_config, smtp_password)?;
+    transport
+        .send(email)
+        .await
+        .context("Failed to send email via SMTP")?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -439,17 +782,27 @@ mod tests {
         assert_eq!(report.success_rate(), 0.8);
     }
 
+    #[tokio::test]
+    async fn test_rate_limiter() {
+        let mut limiter = RateLimiter::new(120); // 2 per second
+
+        let start = tokio::time::Instant::now();
+        limiter.acquire().await;
+        limiter.acquire().await;
+        let elapsed = start.elapsed();
+
+        // First two should be nearly instant (burst)
+        assert!(elapsed < Duration::from_millis(100));
+    }
+
     #[test]
-    fn test_rate_limiter() {
-        let mut limiter = RateLimiter::new(2);
-
-        // Should not wait for first two sends
-        limiter.wait_if_needed();
-        limiter.record_send();
-        limiter.wait_if_needed();
-        limiter.record_send();
-
-        assert_eq!(limiter.last_send_times.len(), 2);
+    fn test_personalize_content() {
+        let content = "Hello! Token: {{unsubscribe_token}} URL: {{unsubscribe_url}}";
+        let result = personalize_content(content, "abc123", "test@example.com");
+        assert!(result.contains("abc123"));
+        assert!(result.contains("mailto:test@example.com"));
+        assert!(!result.contains("{{unsubscribe_token}}"));
+        assert!(!result.contains("{{unsubscribe_url}}"));
     }
 
     #[test]
@@ -484,5 +837,14 @@ mod tests {
         // Same email should always produce the same token (deterministic)
         let token2 = sender.generate_unsubscribe_token(email);
         assert_eq!(token, token2);
+    }
+
+    #[test]
+    fn test_send_config_defaults() {
+        let config = SendConfig::default();
+        assert_eq!(config.emails_per_minute, DEFAULT_RATE_LIMIT);
+        assert_eq!(config.concurrency, DEFAULT_CONCURRENCY);
+        assert_eq!(config.batch_size, DEFAULT_BATCH_SIZE);
+        assert_eq!(config.max_retries, MAX_RETRIES);
     }
 }

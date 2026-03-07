@@ -48,7 +48,7 @@ imap = "2.3.0"
 native-tls = "0.2"
 mailparse = "0.16"
 rusqlite = { version = "0.37", features = ["bundled"] }
-lettre = "0.11"
+lettre = { version = "0.11", features = ["tokio1-native-tls"] }
 html2text = "0.6"
 css-inline = "0.18"
 rpassword = "5.0"
@@ -57,6 +57,7 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 subtle = "2.6"
+futures = "0.3"
 
 [dev-dependencies]
 tempfile = "3.25"

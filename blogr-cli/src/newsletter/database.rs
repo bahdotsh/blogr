@@ -76,6 +76,54 @@ impl Subscriber {
     }
 }
 
+/// Status of a queued send item
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SendQueueStatus {
+    Pending,
+    Sent,
+    Failed,
+    Retry,
+}
+
+impl std::fmt::Display for SendQueueStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SendQueueStatus::Pending => write!(f, "pending"),
+            SendQueueStatus::Sent => write!(f, "sent"),
+            SendQueueStatus::Failed => write!(f, "failed"),
+            SendQueueStatus::Retry => write!(f, "retry"),
+        }
+    }
+}
+
+impl std::str::FromStr for SendQueueStatus {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "pending" => Ok(SendQueueStatus::Pending),
+            "sent" => Ok(SendQueueStatus::Sent),
+            "failed" => Ok(SendQueueStatus::Failed),
+            "retry" => Ok(SendQueueStatus::Retry),
+            _ => Err(anyhow::anyhow!("Invalid send queue status: {}", s)),
+        }
+    }
+}
+
+/// A queued send item for tracking individual email delivery
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct SendQueueItem {
+    pub id: i64,
+    pub send_history_id: i64,
+    pub subscriber_id: i64,
+    pub subscriber_email: String,
+    pub status: SendQueueStatus,
+    pub attempts: i32,
+    pub last_attempt_at: Option<DateTime<Utc>>,
+    pub error_message: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct NewsletterDatabase {
     conn: Mutex<Connection>,
@@ -117,6 +165,15 @@ impl NewsletterDatabase {
     fn initialize(&mut self) -> Result<()> {
         let conn = self.lock_conn()?;
 
+        // Enable WAL mode for better concurrent read/write performance
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA cache_size=-64000;
+             PRAGMA busy_timeout=5000;",
+        )
+        .context("Failed to set database pragmas")?;
+
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS subscribers (
@@ -152,6 +209,22 @@ impl NewsletterDatabase {
                 sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (send_history_id) REFERENCES send_history(id)
             );
+
+            CREATE TABLE IF NOT EXISTS send_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                send_history_id INTEGER NOT NULL,
+                subscriber_id INTEGER NOT NULL,
+                subscriber_email TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed', 'retry')),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_attempt_at DATETIME,
+                error_message TEXT,
+                FOREIGN KEY (send_history_id) REFERENCES send_history(id),
+                FOREIGN KEY (subscriber_id) REFERENCES subscribers(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_send_queue_status ON send_queue(send_history_id, status);
+            CREATE INDEX IF NOT EXISTS idx_send_queue_history ON send_queue(send_history_id);
             "#,
         )
         .context("Failed to initialize database schema")?;
@@ -192,6 +265,37 @@ impl NewsletterDatabase {
         ])?;
 
         Ok(id)
+    }
+
+    /// Add multiple subscribers in a single transaction (batch insert)
+    pub fn add_subscribers_batch(&self, subscribers: &[Subscriber]) -> Result<usize> {
+        let mut conn = self.lock_conn()?;
+        let tx = conn.transaction()?;
+        let mut count = 0;
+
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR IGNORE INTO subscribers (email, status, subscribed_at, source_email_id, notes)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+
+            for subscriber in subscribers {
+                let rows = stmt.execute(params![
+                    subscriber.email,
+                    subscriber.status.to_string(),
+                    subscriber
+                        .subscribed_at
+                        .format("%Y-%m-%d %H:%M:%S%.3f")
+                        .to_string(),
+                    subscriber.source_email_id,
+                    subscriber.notes,
+                ])?;
+                count += rows;
+            }
+        }
+
+        tx.commit()?;
+        Ok(count)
     }
 
     /// Update subscriber status
@@ -299,6 +403,43 @@ impl NewsletterDatabase {
         Ok(subscribers)
     }
 
+    /// Stream approved subscribers in batches for sending (constant memory usage)
+    #[allow(dead_code)]
+    pub fn iter_approved_batches(&self, batch_size: usize) -> Result<Vec<Vec<Subscriber>>> {
+        let conn = self.lock_conn()?;
+        let total: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM subscribers WHERE status = 'approved'",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let mut batches = Vec::new();
+        let mut offset: usize = 0;
+
+        while (offset as i64) < total {
+            let mut stmt = conn.prepare(
+                "SELECT id, email, status, subscribed_at, approved_at, declined_at, source_email_id, notes
+                 FROM subscribers WHERE status = 'approved'
+                 ORDER BY id ASC LIMIT ?1 OFFSET ?2",
+            )?;
+
+            let batch: Vec<Subscriber> = stmt
+                .query_map(params![batch_size as i64, offset as i64], |row| {
+                    Self::row_to_subscriber(row)
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            if batch.is_empty() {
+                break;
+            }
+            offset += batch.len();
+            batches.push(batch);
+        }
+
+        Ok(batches)
+    }
+
     /// Get subscriber by email
     pub fn get_subscriber_by_email(&self, email: &str) -> Result<Option<Subscriber>> {
         let conn = self.lock_conn()?;
@@ -356,6 +497,39 @@ impl NewsletterDatabase {
         }
     }
 
+    /// Check multiple emails for existence in one query (batch dedup)
+    pub fn emails_exist_batch(
+        &self,
+        emails: &[String],
+    ) -> Result<std::collections::HashSet<String>> {
+        if emails.is_empty() {
+            return Ok(std::collections::HashSet::new());
+        }
+
+        let conn = self.lock_conn()?;
+        let mut existing = std::collections::HashSet::new();
+
+        // Process in chunks to avoid SQLite variable limit
+        for chunk in emails.chunks(500) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
+            let query = format!(
+                "SELECT email FROM subscribers WHERE email IN ({})",
+                placeholders.join(",")
+            );
+
+            let mut stmt = conn.prepare(&query)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                row.get::<_, String>(0)
+            })?;
+
+            for email in rows.flatten() {
+                existing.insert(email);
+            }
+        }
+
+        Ok(existing)
+    }
+
     /// Record a newsletter send in history
     pub fn record_send(
         &self,
@@ -377,7 +551,23 @@ impl NewsletterDatabase {
         Ok(id)
     }
 
+    /// Update send history counts
+    pub fn update_send_history(
+        &self,
+        send_history_id: i64,
+        successful: usize,
+        failed: usize,
+    ) -> Result<()> {
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "UPDATE send_history SET successful_sends = ?1, failed_sends = ?2 WHERE id = ?3",
+            params![successful as i64, failed as i64, send_history_id],
+        )?;
+        Ok(())
+    }
+
     /// Record individual send recipient status
+    #[allow(dead_code)]
     pub fn record_send_recipient(
         &self,
         send_history_id: i64,
@@ -391,6 +581,196 @@ impl NewsletterDatabase {
             params![send_history_id, email, status, error_message],
         )?;
         Ok(())
+    }
+
+    /// Record send recipients in a batch transaction
+    pub fn record_send_recipients_batch(
+        &self,
+        send_history_id: i64,
+        results: &[(String, &str, Option<String>)], // (email, status, error_message)
+    ) -> Result<()> {
+        let mut conn = self.lock_conn()?;
+        let tx = conn.transaction()?;
+
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO send_recipients (send_history_id, subscriber_email, status, error_message) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+
+            for (email, status, error_message) in results {
+                stmt.execute(params![
+                    send_history_id,
+                    email,
+                    status,
+                    error_message.as_deref(),
+                ])?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    // --- Send Queue operations for resume/retry support ---
+
+    /// Create a send queue by populating it with all approved subscribers for a send
+    pub fn create_send_queue(&self, send_history_id: i64) -> Result<usize> {
+        let conn = self.lock_conn()?;
+        let count = conn.execute(
+            "INSERT INTO send_queue (send_history_id, subscriber_id, subscriber_email, status)
+             SELECT ?1, id, email, 'pending'
+             FROM subscribers WHERE status = 'approved'",
+            params![send_history_id],
+        )?;
+        Ok(count)
+    }
+
+    /// Get pending/retry items from the send queue in batches
+    pub fn get_send_queue_batch(
+        &self,
+        send_history_id: i64,
+        batch_size: usize,
+    ) -> Result<Vec<SendQueueItem>> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, send_history_id, subscriber_id, subscriber_email, status, attempts, last_attempt_at, error_message
+             FROM send_queue
+             WHERE send_history_id = ?1 AND status IN ('pending', 'retry')
+             ORDER BY id ASC
+             LIMIT ?2",
+        )?;
+
+        let items: Vec<SendQueueItem> = stmt
+            .query_map(params![send_history_id, batch_size as i64], |row| {
+                let status_str: String = row.get(4)?;
+                let last_attempt_str: Option<String> = row.get(6)?;
+
+                Ok(SendQueueItem {
+                    id: row.get(0)?,
+                    send_history_id: row.get(1)?,
+                    subscriber_id: row.get(2)?,
+                    subscriber_email: row.get(3)?,
+                    status: status_str.parse().unwrap_or(SendQueueStatus::Pending),
+                    attempts: row.get(5)?,
+                    last_attempt_at: last_attempt_str
+                        .as_deref()
+                        .and_then(|s| parse_datetime(s).ok()),
+                    error_message: row.get(7)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(items)
+    }
+
+    /// Update a send queue item's status after send attempt
+    pub fn update_send_queue_item(
+        &self,
+        item_id: i64,
+        status: SendQueueStatus,
+        error_message: Option<&str>,
+    ) -> Result<()> {
+        let now = Utc::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "UPDATE send_queue SET status = ?1, attempts = attempts + 1, last_attempt_at = ?2, error_message = ?3 WHERE id = ?4",
+            params![status.to_string(), now, error_message, item_id],
+        )?;
+        Ok(())
+    }
+
+    /// Update multiple send queue items in a batch transaction
+    pub fn update_send_queue_items_batch(
+        &self,
+        updates: &[(i64, SendQueueStatus, Option<String>)],
+    ) -> Result<()> {
+        let now = Utc::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+        let mut conn = self.lock_conn()?;
+        let tx = conn.transaction()?;
+
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE send_queue SET status = ?1, attempts = attempts + 1, last_attempt_at = ?2, error_message = ?3 WHERE id = ?4",
+            )?;
+
+            for (item_id, status, error_message) in updates {
+                stmt.execute(params![
+                    status.to_string(),
+                    now,
+                    error_message.as_deref(),
+                    item_id,
+                ])?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Get send queue stats for a given send
+    pub fn get_send_queue_stats(
+        &self,
+        send_history_id: i64,
+    ) -> Result<(usize, usize, usize, usize)> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT status, COUNT(*) FROM send_queue WHERE send_history_id = ?1 GROUP BY status",
+        )?;
+
+        let mut pending = 0usize;
+        let mut sent = 0usize;
+        let mut failed = 0usize;
+        let mut retry = 0usize;
+
+        let rows = stmt.query_map(params![send_history_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+
+        for row in rows {
+            let (status, count) = row?;
+            match status.as_str() {
+                "pending" => pending = count as usize,
+                "sent" => sent = count as usize,
+                "failed" => failed = count as usize,
+                "retry" => retry = count as usize,
+                _ => {}
+            }
+        }
+
+        Ok((pending, sent, failed, retry))
+    }
+
+    /// Get the latest incomplete send (for resume)
+    pub fn get_incomplete_send(&self) -> Result<Option<i64>> {
+        let conn = self.lock_conn()?;
+        let result = conn.query_row(
+            "SELECT sh.id FROM send_history sh
+             INNER JOIN send_queue sq ON sq.send_history_id = sh.id
+             WHERE sq.status IN ('pending', 'retry')
+             GROUP BY sh.id
+             ORDER BY sh.id DESC
+             LIMIT 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        );
+
+        match result {
+            Ok(id) => Ok(Some(id)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Get the subject for a send history entry
+    pub fn get_send_history_subject(&self, send_history_id: i64) -> Result<String> {
+        let conn = self.lock_conn()?;
+        let subject: String = conn.query_row(
+            "SELECT subject FROM send_history WHERE id = ?1",
+            params![send_history_id],
+            |row| row.get(0),
+        )?;
+        Ok(subject)
     }
 
     /// Helper function to convert database row to Subscriber
@@ -569,6 +949,118 @@ mod tests {
 
         db.record_send_recipient(send_id, "user@example.com", "sent", None)?;
         db.record_send_recipient(send_id, "fail@example.com", "failed", Some("SMTP error"))?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_batch_insert() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        let subscribers: Vec<Subscriber> = (0..100)
+            .map(|i| Subscriber::new(format!("batch{}@example.com", i), None))
+            .collect();
+
+        let count = db.add_subscribers_batch(&subscribers)?;
+        assert_eq!(count, 100);
+
+        let total = db.get_subscriber_count(None)?;
+        assert_eq!(total, 100);
+
+        // Duplicates should be ignored
+        let count2 = db.add_subscribers_batch(&subscribers)?;
+        assert_eq!(count2, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_batch_email_exists() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        for i in 0..5 {
+            let sub = Subscriber::new(format!("exists{}@example.com", i), None);
+            db.add_subscriber(&sub)?;
+        }
+
+        let emails: Vec<String> = (0..10)
+            .map(|i| format!("exists{}@example.com", i))
+            .collect();
+        let existing = db.emails_exist_batch(&emails)?;
+        assert_eq!(existing.len(), 5);
+        assert!(existing.contains("exists0@example.com"));
+        assert!(!existing.contains("exists5@example.com"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_send_queue() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        // Create approved subscribers
+        for i in 0..5 {
+            let mut sub = Subscriber::new(format!("queue{}@example.com", i), None);
+            sub.status = SubscriberStatus::Approved;
+            db.add_subscriber(&sub)?;
+        }
+
+        // Create a send and populate queue
+        let send_id = db.record_send("Queue Test", 5, 0, 0)?;
+        let queued = db.create_send_queue(send_id)?;
+        assert_eq!(queued, 5);
+
+        // Get a batch from the queue
+        let batch = db.get_send_queue_batch(send_id, 3)?;
+        assert_eq!(batch.len(), 3);
+        assert_eq!(batch[0].status, SendQueueStatus::Pending);
+
+        // Update items
+        db.update_send_queue_item(batch[0].id, SendQueueStatus::Sent, None)?;
+        db.update_send_queue_item(batch[1].id, SendQueueStatus::Failed, Some("SMTP timeout"))?;
+
+        // Check stats
+        let (pending, sent, failed, _retry) = db.get_send_queue_stats(send_id)?;
+        assert_eq!(sent, 1);
+        assert_eq!(failed, 1);
+        assert_eq!(pending, 3); // 2 remaining from first batch + 2 not yet fetched = 3 pending
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_batch_send_recipients() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+        let send_id = db.record_send("Batch Test", 3, 0, 0)?;
+
+        let results = vec![
+            ("a@example.com".to_string(), "sent", None),
+            ("b@example.com".to_string(), "sent", None),
+            (
+                "c@example.com".to_string(),
+                "failed",
+                Some("error".to_string()),
+            ),
+        ];
+
+        db.record_send_recipients_batch(send_id, &results)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_iter_approved_batches() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        for i in 0..10 {
+            let mut sub = Subscriber::new(format!("iter{}@example.com", i), None);
+            sub.status = SubscriberStatus::Approved;
+            db.add_subscriber(&sub)?;
+        }
+
+        let batches = db.iter_approved_batches(3)?;
+        assert_eq!(batches.len(), 4); // 3+3+3+1
+        assert_eq!(batches[0].len(), 3);
+        assert_eq!(batches[3].len(), 1);
 
         Ok(())
     }

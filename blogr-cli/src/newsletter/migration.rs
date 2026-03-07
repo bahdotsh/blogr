@@ -188,7 +188,7 @@ impl MigrationManager {
         Self { database }
     }
 
-    /// Import subscribers from a file
+    /// Import subscribers from a file using batch operations
     pub fn import_from_file(&mut self, config: &MigrationConfig) -> Result<MigrationResult> {
         println!("Starting migration from {:?} source...", config.source);
 
@@ -207,39 +207,47 @@ impl MigrationManager {
             imported_subscribers: Vec::new(),
         };
 
-        for imported in imported_data {
-            match self.import_subscriber(&imported, &config.source) {
-                Ok(subscriber) => {
-                    // Check if subscriber already exists
-                    match self.database.get_subscriber_by_email(&subscriber.email) {
-                        Ok(Some(_)) => {
-                            result.skipped_duplicates += 1;
-                            println!("Skipped duplicate: {}", subscriber.email);
-                        }
-                        Ok(None) => {
-                            // Add new subscriber
-                            match self.database.add_subscriber(&subscriber) {
-                                Ok(_) => {
-                                    result.successfully_imported += 1;
-                                    result.imported_subscribers.push(subscriber);
-                                    println!("Imported: {}", imported.email);
-                                }
-                                Err(e) => {
-                                    let error = format!("Failed to save {}: {}", imported.email, e);
-                                    result.errors.push(error.clone());
-                                    eprintln!("Error: {}", error);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            let error = format!("Database error for {}: {}", imported.email, e);
-                            result.errors.push(error.clone());
-                            eprintln!("Error: {}", error);
-                        }
-                    }
-                }
+        // Convert all imported data to Subscriber structs first
+        let mut subscribers_to_insert = Vec::new();
+        for imported in &imported_data {
+            match self.import_subscriber(imported, &config.source) {
+                Ok(subscriber) => subscribers_to_insert.push(subscriber),
                 Err(e) => {
                     let error = format!("Failed to process {}: {}", imported.email, e);
+                    result.errors.push(error.clone());
+                    eprintln!("Error: {}", error);
+                }
+            }
+        }
+
+        // Batch dedup: check which emails already exist in one query
+        let emails: Vec<String> = subscribers_to_insert
+            .iter()
+            .map(|s| s.email.clone())
+            .collect();
+        let existing_emails = self.database.emails_exist_batch(&emails)?;
+        result.skipped_duplicates = existing_emails.len();
+
+        // Filter out existing subscribers
+        let new_subscribers: Vec<Subscriber> = subscribers_to_insert
+            .into_iter()
+            .filter(|s| !existing_emails.contains(&s.email))
+            .collect();
+
+        if !existing_emails.is_empty() {
+            println!("Skipping {} existing subscribers", existing_emails.len());
+        }
+
+        // Batch insert all new subscribers in a single transaction
+        if !new_subscribers.is_empty() {
+            match self.database.add_subscribers_batch(&new_subscribers) {
+                Ok(count) => {
+                    result.successfully_imported = count;
+                    result.imported_subscribers = new_subscribers;
+                    println!("Imported {} new subscribers", count);
+                }
+                Err(e) => {
+                    let error = format!("Batch insert failed: {}", e);
                     result.errors.push(error.clone());
                     eprintln!("Error: {}", error);
                 }
