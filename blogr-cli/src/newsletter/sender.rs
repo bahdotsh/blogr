@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::thread;
 use std::time::{Duration, Instant};
+use subtle::ConstantTimeEq;
 
 use crate::config::SmtpConfig;
 use crate::newsletter::composer::Newsletter;
@@ -383,8 +384,8 @@ impl NewsletterSender {
     #[allow(dead_code)]
     pub fn verify_unsubscribe_token(&self, email: &str, token: &str) -> bool {
         let expected = self.generate_unsubscribe_token(email);
-        // Constant-time comparison
-        expected == token
+        // Constant-time comparison to prevent timing attacks
+        expected.as_bytes().ct_eq(token.as_bytes()).into()
     }
 
     /// Print sending summary
