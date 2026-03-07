@@ -403,43 +403,6 @@ impl NewsletterDatabase {
         Ok(subscribers)
     }
 
-    /// Stream approved subscribers in batches for sending (constant memory usage)
-    #[allow(dead_code)]
-    pub fn iter_approved_batches(&self, batch_size: usize) -> Result<Vec<Vec<Subscriber>>> {
-        let conn = self.lock_conn()?;
-        let total: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM subscribers WHERE status = 'approved'",
-            [],
-            |row| row.get(0),
-        )?;
-
-        let mut batches = Vec::new();
-        let mut offset: usize = 0;
-
-        while (offset as i64) < total {
-            let mut stmt = conn.prepare(
-                "SELECT id, email, status, subscribed_at, approved_at, declined_at, source_email_id, notes
-                 FROM subscribers WHERE status = 'approved'
-                 ORDER BY id ASC LIMIT ?1 OFFSET ?2",
-            )?;
-
-            let batch: Vec<Subscriber> = stmt
-                .query_map(params![batch_size as i64, offset as i64], |row| {
-                    Self::row_to_subscriber(row)
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-
-            if batch.is_empty() {
-                break;
-            }
-            offset += batch.len();
-            batches.push(batch);
-        }
-
-        Ok(batches)
-    }
-
     /// Get subscriber by email
     pub fn get_subscriber_by_email(&self, email: &str) -> Result<Option<Subscriber>> {
         let conn = self.lock_conn()?;
@@ -1047,21 +1010,4 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_iter_approved_batches() -> Result<()> {
-        let db = NewsletterDatabase::in_memory()?;
-
-        for i in 0..10 {
-            let mut sub = Subscriber::new(format!("iter{}@example.com", i), None);
-            sub.status = SubscriberStatus::Approved;
-            db.add_subscriber(&sub)?;
-        }
-
-        let batches = db.iter_approved_batches(3)?;
-        assert_eq!(batches.len(), 4); // 3+3+3+1
-        assert_eq!(batches[0].len(), 3);
-        assert_eq!(batches[3].len(), 1);
-
-        Ok(())
-    }
 }

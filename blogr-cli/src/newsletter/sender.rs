@@ -220,6 +220,17 @@ impl NewsletterSender {
                 let total = pending + sent + failed + retry;
                 let remaining = pending + retry;
                 let subject = database.get_send_history_subject(id)?;
+
+                // Validate that the newsletter matches the incomplete send
+                if subject != newsletter.subject {
+                    return Err(anyhow::anyhow!(
+                        "Incomplete send found for '{}', but current newsletter subject is '{}'. \
+                         Complete or clear the previous send before starting a new one.",
+                        subject,
+                        newsletter.subject
+                    ));
+                }
+
                 println!(
                     "Resuming incomplete send '{}': {}/{} remaining",
                     subject, remaining, total
@@ -250,8 +261,14 @@ impl NewsletterSender {
         // Pre-compute the parts of the newsletter that don't change per subscriber
         let newsletter = Arc::new(newsletter.clone());
         let from_address = self.from_address.clone();
-        let smtp_config = self.smtp_config.clone();
         let hmac_secret = self.hmac_secret.clone();
+        let smtp_username = self.smtp_config.username.clone();
+
+        // Create a single async SMTP transport to be shared across all tasks
+        let transport = Arc::new(create_async_smtp_transport(
+            &self.smtp_config,
+            smtp_password,
+        )?);
 
         // Rate limiter shared across all tasks
         let rate_limiter = Arc::new(tokio::sync::Mutex::new(RateLimiter::new(
@@ -298,10 +315,10 @@ impl NewsletterSender {
                 let permit = semaphore.clone().acquire_owned().await?;
                 let newsletter = Arc::clone(&newsletter);
                 let rate_limiter = Arc::clone(&rate_limiter);
+                let transport = Arc::clone(&transport);
                 let from_address = from_address.clone();
-                let smtp_config = smtp_config.clone();
                 let hmac_secret = hmac_secret.clone();
-                let smtp_password = smtp_password.to_string();
+                let smtp_username = smtp_username.clone();
                 let progress_callback = progress_callback.clone();
                 let processed = Arc::clone(&processed);
                 let task_total = total;
@@ -311,12 +328,12 @@ impl NewsletterSender {
                     rate_limiter.lock().await.acquire().await;
 
                     let result = send_single_email_async(
-                        &smtp_config,
-                        &smtp_password,
+                        &transport,
                         &from_address,
                         &newsletter,
                         &item.subscriber_email,
                         &hmac_secret,
+                        &smtp_username,
                     )
                     .await;
 
@@ -379,118 +396,6 @@ impl NewsletterSender {
         )?;
 
         report.complete();
-        self.print_send_summary(&report);
-
-        Ok(report)
-    }
-
-    /// Send newsletter to all approved subscribers (legacy synchronous method)
-    /// Kept for backwards compatibility.
-    #[allow(dead_code)]
-    pub fn send_to_subscribers(
-        &mut self,
-        newsletter: &Newsletter,
-        subscribers: &[Subscriber],
-        smtp_password: &str,
-        database: Option<&NewsletterDatabase>,
-        progress_callback: Option<Box<dyn Fn(usize, usize)>>,
-    ) -> Result<SendReport> {
-        let approved_subscribers: Vec<_> = subscribers
-            .iter()
-            .filter(|s| s.status == SubscriberStatus::Approved)
-            .collect();
-
-        let mut report = SendReport::new(approved_subscribers.len());
-
-        if approved_subscribers.is_empty() {
-            println!("No approved subscribers found");
-            report.complete();
-            return Ok(report);
-        }
-
-        println!(
-            "Sending newsletter to {} approved subscribers",
-            approved_subscribers.len()
-        );
-
-        // Create SMTP transport
-        let transport = self.create_smtp_transport(smtp_password)?;
-
-        // Use a simple synchronous token-bucket approach for the legacy path
-        let interval = if self.send_config.emails_per_minute > 0 {
-            Duration::from_secs_f64(60.0 / self.send_config.emails_per_minute as f64)
-        } else {
-            Duration::ZERO
-        };
-
-        for (index, subscriber) in approved_subscribers.iter().enumerate() {
-            if index > 0 && !interval.is_zero() {
-                std::thread::sleep(interval);
-            }
-
-            let unsubscribe_token = self.generate_unsubscribe_token(&subscriber.email);
-
-            let personalized_html = personalize_content(
-                &newsletter.html_content,
-                &unsubscribe_token,
-                &self.smtp_config.username,
-            );
-            let personalized_text = personalize_content(
-                &newsletter.text_content,
-                &unsubscribe_token,
-                &self.smtp_config.username,
-            );
-
-            let personalized = Newsletter {
-                subject: newsletter.subject.clone(),
-                html_content: personalized_html,
-                text_content: personalized_text,
-                created_at: newsletter.created_at,
-                unsubscribe_token: Some(unsubscribe_token),
-            };
-
-            match self.send_single_email_sync(&transport, &personalized, subscriber) {
-                Ok(_) => {
-                    report.add_success();
-                    println!("Sent to {}", subscriber.email);
-                }
-                Err(e) => {
-                    let error_msg = format!("Failed to send to {}: {}", subscriber.email, e);
-                    report.add_error(subscriber.email.clone(), error_msg.clone());
-                    eprintln!("{}", error_msg);
-                }
-            }
-
-            if let Some(ref callback) = progress_callback {
-                callback(index + 1, approved_subscribers.len());
-            }
-        }
-
-        report.complete();
-
-        // Record send history in database
-        if let Some(db) = database {
-            if let Ok(send_id) = db.record_send(
-                &newsletter.subject,
-                report.total_subscribers,
-                report.successful_sends,
-                report.failed_sends,
-            ) {
-                let results: Vec<(String, &str, Option<String>)> = report
-                    .errors
-                    .iter()
-                    .map(|e| {
-                        (
-                            e.subscriber_email.clone(),
-                            "failed",
-                            Some(e.error_message.clone()),
-                        )
-                    })
-                    .collect();
-                let _ = db.record_send_recipients_batch(send_id, &results);
-            }
-        }
-
         self.print_send_summary(&report);
 
         Ok(report)
@@ -702,14 +607,14 @@ fn create_async_smtp_transport(
     Ok(transport)
 }
 
-/// Send a single email asynchronously (standalone function for use in spawned tasks)
+/// Send a single email asynchronously using a shared transport
 async fn send_single_email_async(
-    smtp_config: &SmtpConfig,
-    smtp_password: &str,
+    transport: &AsyncSmtpTransport<Tokio1Executor>,
     from_address: &Mailbox,
     newsletter: &Newsletter,
     subscriber_email: &str,
     hmac_secret: &str,
+    smtp_username: &str,
 ) -> Result<()> {
     let to_address: Mailbox = subscriber_email
         .parse()
@@ -719,12 +624,12 @@ async fn send_single_email_async(
     let html = personalize_content(
         &newsletter.html_content,
         &unsubscribe_token,
-        &smtp_config.username,
+        smtp_username,
     );
     let text = personalize_content(
         &newsletter.text_content,
         &unsubscribe_token,
-        &smtp_config.username,
+        smtp_username,
     );
 
     let email = Message::builder()
@@ -746,7 +651,6 @@ async fn send_single_email_async(
         )
         .context("Failed to build email message")?;
 
-    let transport = create_async_smtp_transport(smtp_config, smtp_password)?;
     transport
         .send(email)
         .await

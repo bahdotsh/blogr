@@ -111,10 +111,17 @@ impl NewsletterManager {
 
     /// Get HMAC secret for unsubscribe tokens, from env or derive from SMTP password
     fn get_hmac_secret(&self) -> Result<String> {
-        env::var("NEWSLETTER_HMAC_SECRET").or_else(|_| {
-            self.get_smtp_password()
-                .map(|p| format!("blogr-newsletter-{}", p))
-        })
+        match env::var("NEWSLETTER_HMAC_SECRET") {
+            Ok(secret) => Ok(secret),
+            Err(_) => {
+                eprintln!(
+                    "Warning: NEWSLETTER_HMAC_SECRET not set. Deriving from SMTP password. \
+                     Set a dedicated NEWSLETTER_HMAC_SECRET for independent key rotation."
+                );
+                self.get_smtp_password()
+                    .map(|p| format!("blogr-newsletter-{}", p))
+            }
+        }
     }
 
     /// Fetch subscribers from email inbox
