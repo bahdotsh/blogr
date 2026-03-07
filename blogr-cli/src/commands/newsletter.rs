@@ -1093,7 +1093,9 @@ pub async fn handle_tag(email: &str, add: Option<&str>, remove: Option<&str>) ->
         .get_subscriber_by_email(email)?
         .ok_or_else(|| anyhow::anyhow!("Subscriber '{}' not found", email))?;
 
-    let id = subscriber.id.unwrap();
+    let id = subscriber
+        .id
+        .ok_or_else(|| anyhow::anyhow!("Subscriber has no ID"))?;
 
     if let Some(tag) = add {
         db.add_tag(id, tag)?;
