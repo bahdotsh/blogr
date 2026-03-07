@@ -1,19 +1,105 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <title><![CDATA[Syntax Highlighting Demo]]></title>
-  <link href="https://example.com"/>
-  <link href="https://example.com/atom.xml" rel="self"/>
-  <id>https://example.com</id>
-  <updated>2026-03-07T06:22:02+0000</updated>
-  <subtitle><![CDATA[A sample project demonstrating syntax highlighting in code blocks]]></subtitle>
-  <generator>Blogr Static Site Generator</generator>
-  <entry>
-    <title><![CDATA[Syntax Highlighting Showcase]]></title>
-    <link href="https://example.com/posts/syntax-highlighting-showcase.html"/>
-    <id>https://example.com/posts/syntax-highlighting-showcase.html</id>
-    <updated>2026-03-07T00:00:00+0000</updated>
-    <summary><![CDATA[Demonstrates syntax highlighting across multiple languages]]></summary>
-    <content type="html"><![CDATA[<h1>Syntax Highlighting Showcase</h1>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Syntax Highlighting Showcase - Sample Blog</title>
+
+    
+<meta name="description" content="Demonstrates syntax highlighting across multiple languages">
+<meta name="author" content="blogr">
+
+
+    <!-- Artistic Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Crimson+Text:ital,wght@0,400;0,600;1,400&family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="/css/style.css">
+
+    <meta name="blogr-base" content="/">
+    
+</head>
+<body>
+    <div class="page-container">
+        <!-- Minimal header with title and search -->
+        <header class="site-header">
+            <h1 class="site-title">
+                <a href="/">Sample Blog</a>
+            </h1>
+            
+            <p class="site-subtitle">A sample blogr project showcasing various features</p>
+            
+            
+            <!-- Search form -->
+            <form id="search-form" class="search-form" role="search">
+                <div class="search-container">
+                    <input 
+                        id="search-input" 
+                        name="q" 
+                        type="search" 
+                        placeholder="Search posts..." 
+                        autocomplete="off"
+                        aria-label="Search posts"
+                    />
+                    <button type="submit" class="search-button" aria-label="Search">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8"></circle>
+                            <path d="m21 21-4.35-4.35"></path>
+                        </svg>
+                    </button>
+                </div>
+                <div id="search-results" class="search-results" hidden></div>
+            </form>
+        </header>
+
+        <!-- Main content area -->
+        <main class="main-content">
+            
+<article class="post-standalone">
+    <!-- Artistic header -->
+    <header class="post-standalone-header">
+        <div class="post-title-area">
+            <h1 class="post-standalone-title">Syntax Highlighting Showcase</h1>
+            
+            
+            <div class="post-standalone-description">
+                Demonstrates syntax highlighting across multiple languages
+            </div>
+            
+        </div>
+
+        <div class="post-standalone-meta">
+            <div class="meta-row">
+                <time class="post-date">March 07, 2026</time>
+                
+                
+                <span class="post-author">blogr</span>
+                
+                
+                
+                <span class="reading-time">1 minute read</span>
+                
+            </div>
+
+            
+            <div class="post-tags-standalone">
+                <span class="tags-intro">exploring:</span>
+                
+                <a href="/tags/syntax-highlighting.html" class="tag-link-standalone">syntax-highlighting</a>, 
+                
+                <a href="/tags/code.html" class="tag-link-standalone">code</a>, 
+                
+                <a href="/tags/demo.html" class="tag-link-standalone">demo</a>
+                
+            </div>
+            
+        </div>
+    </header>
+
+    <!-- Content with artistic typography -->
+    <div class="post-standalone-content">
+        <h1>Syntax Highlighting Showcase</h1>
 <p>This post demonstrates the syntax highlighting feature added to blogr. Fenced
 code blocks with a language identifier are highlighted using syntect with the
 base16-ocean.dark theme. Blocks without a language gracefully fall back to
@@ -100,9 +186,60 @@ is properly escaped and wrapped.</p>
 <pre class="highlight"><code>let x = 1;
 let y = 2;
 println!(&quot;{}&quot;, x + y);
-</code></pre>]]></content>
-    <author>
-      <name>blogr</name>
-    </author>
-  </entry>
-</feed>
+</code></pre>
+    </div>
+
+    <!-- Minimal footer -->
+    <footer class="post-standalone-footer">
+        <div class="post-navigation">
+            <a href="/" class="nav-link">← all posts</a>
+            
+            
+            <div class="related-tags">
+                <span class="related-label">more in:</span>
+                
+                <a href="/tags/syntax-highlighting.html" class="related-tag">syntax-highlighting</a>, 
+                
+                <a href="/tags/code.html" class="related-tag">code</a>, 
+                
+                <a href="/tags/demo.html" class="related-tag">demo</a>
+                
+            </div>
+            
+        </div>
+    </footer>
+</article>
+
+        </main>
+
+        <!-- Minimal footer -->
+        <footer class="site-footer">
+            <div class="footer-content">
+                <p class="author-credit">blogr</p>
+                <div class="footer-links">
+                    
+                    <span class="separator">·</span>
+                    <a href="https://github.com/bahdotsh/blogr" target="_blank" rel="noopener" class="blogr-link">blogr</a>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Search functionality -->
+    <script src="/js/vendor/minisearch.min.js"></script>
+    <script src="/js/search.js"></script>
+    
+    
+    <script>
+    MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']]
+      }
+    };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    
+    
+</body>
+</html>

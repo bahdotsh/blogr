@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Archive - Syntax Highlighting Demo</title>
+    <title>Tags - Sample Blog</title>
 
     
-<meta name="description" content="Archive of all posts from Syntax Highlighting Demo">
+<meta name="description" content="Browse all tags on Sample Blog">
 
 
     <!-- Artistic Fonts -->
@@ -24,10 +24,10 @@
         <!-- Minimal header with title and search -->
         <header class="site-header">
             <h1 class="site-title">
-                <a href="/">Syntax Highlighting Demo</a>
+                <a href="/">Sample Blog</a>
             </h1>
             
-            <p class="site-subtitle">A sample project demonstrating syntax highlighting in code blocks</p>
+            <p class="site-subtitle">A sample blogr project showcasing various features</p>
             
             
             <!-- Search form -->
@@ -55,63 +55,41 @@
         <!-- Main content area -->
         <main class="main-content">
             
-<div class="archive-page">
-    <header class="archive-header">
-        <h1 class="archive-title">Archive</h1>
-        <p class="archive-subtitle">All posts from Syntax Highlighting Demo</p>
+<div class="tags-page">
+    <header class="tags-header">
+        <h1 class="tags-title">All Tags</h1>
+        <p class="tags-subtitle">Browse posts by topic</p>
     </header>
 
     
-        <div class="archive-content">
+        <div class="tags-cloud">
             
-                
-                <section class="archive-year">
-                    <h2 class="year-title">2026</h2>
-                    <div class="year-posts">
-                        
-                        <article class="archive-post">
-                            <div class="post-date">
-                                <time datetime="2026-03-07T00:00:00Z">
-                                    Mar 07
-                                </time>
-                            </div>
-                            <div class="post-content">
-                                <h3 class="post-title">
-                                    <a href="/posts/syntax-highlighting-showcase.html">Syntax Highlighting Showcase</a>
-                                </h3>
-                                
-                                <p class="post-description">Demonstrates syntax highlighting across multiple languages</p>
-                                
-                                <div class="post-meta">
-                                    
-                                    <span class="post-author">by blogr</span>
-                                    
-                                    
-                                </div>
-                                
-                                <div class="post-tags">
-                                    
-                                    <a href="/tags/syntax-highlighting.html" class="tag">#syntax-highlighting</a>
-                                    
-                                    <a href="/tags/code.html" class="tag">#code</a>
-                                    
-                                    <a href="/tags/demo.html" class="tag">#demo</a>
-                                    
-                                </div>
-                                
-                            </div>
-                        </article>
-                        
-                    </div>
-                </section>
-                
+            <a href="/tags/syntax-highlighting.html" class="tag-cloud-item">
+                #syntax-highlighting (1)
+            </a>
+            
+            <a href="/tags/code.html" class="tag-cloud-item">
+                #code (1)
+            </a>
+            
+            <a href="/tags/demo.html" class="tag-cloud-item">
+                #demo (2)
+            </a>
+            
+            <a href="/tags/math.html" class="tag-cloud-item">
+                #math (1)
+            </a>
+            
+            <a href="/tags/mathjax.html" class="tag-cloud-item">
+                #mathjax (1)
+            </a>
             
         </div>
     
 
-    <div class="archive-navigation">
+    <div class="tags-navigation">
         <a href="/" class="back-home">← Home</a>
-        <a href="/tags/index.html" class="view-tags">View Tags →</a>
+        <a href="/archive.html" class="view-archive">View Archive →</a>
     </div>
 </div>
 
@@ -133,6 +111,17 @@
     <!-- Search functionality -->
     <script src="/js/vendor/minisearch.min.js"></script>
     <script src="/js/search.js"></script>
+    
+    
+    <script>
+    MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']]
+      }
+    };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
     
     
 </body>

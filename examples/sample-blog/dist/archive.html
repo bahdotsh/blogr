@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Archive - Sample Blog</title>
+
+    
+<meta name="description" content="Archive of all posts from Sample Blog">
+
+
+    <!-- Artistic Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Crimson+Text:ital,wght@0,400;0,600;1,400&family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="/css/style.css">
+
+    <meta name="blogr-base" content="/">
+    
+</head>
+<body>
+    <div class="page-container">
+        <!-- Minimal header with title and search -->
+        <header class="site-header">
+            <h1 class="site-title">
+                <a href="/">Sample Blog</a>
+            </h1>
+            
+            <p class="site-subtitle">A sample blogr project showcasing various features</p>
+            
+            
+            <!-- Search form -->
+            <form id="search-form" class="search-form" role="search">
+                <div class="search-container">
+                    <input 
+                        id="search-input" 
+                        name="q" 
+                        type="search" 
+                        placeholder="Search posts..." 
+                        autocomplete="off"
+                        aria-label="Search posts"
+                    />
+                    <button type="submit" class="search-button" aria-label="Search">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8"></circle>
+                            <path d="m21 21-4.35-4.35"></path>
+                        </svg>
+                    </button>
+                </div>
+                <div id="search-results" class="search-results" hidden></div>
+            </form>
+        </header>
+
+        <!-- Main content area -->
+        <main class="main-content">
+            
+<div class="archive-page">
+    <header class="archive-header">
+        <h1 class="archive-title">Archive</h1>
+        <p class="archive-subtitle">All posts from Sample Blog</p>
+    </header>
+
+    
+        <div class="archive-content">
+            
+                
+                <section class="archive-year">
+                    <h2 class="year-title">2026</h2>
+                    <div class="year-posts">
+                        
+                        <article class="archive-post">
+                            <div class="post-date">
+                                <time datetime="2026-03-07T00:00:00Z">
+                                    Mar 07
+                                </time>
+                            </div>
+                            <div class="post-content">
+                                <h3 class="post-title">
+                                    <a href="/posts/mathjax-demo.html">MathJax Rendering Demo</a>
+                                </h3>
+                                
+                                <p class="post-description">Demonstrates LaTeX math rendering with MathJax</p>
+                                
+                                <div class="post-meta">
+                                    
+                                    <span class="post-author">by blogr</span>
+                                    
+                                    
+                                </div>
+                                
+                                <div class="post-tags">
+                                    
+                                    <a href="/tags/math.html" class="tag">#math</a>
+                                    
+                                    <a href="/tags/mathjax.html" class="tag">#mathjax</a>
+                                    
+                                    <a href="/tags/demo.html" class="tag">#demo</a>
+                                    
+                                </div>
+                                
+                            </div>
+                        </article>
+                        
+                        <article class="archive-post">
+                            <div class="post-date">
+                                <time datetime="2026-03-07T00:00:00Z">
+                                    Mar 07
+                                </time>
+                            </div>
+                            <div class="post-content">
+                                <h3 class="post-title">
+                                    <a href="/posts/syntax-highlighting-showcase.html">Syntax Highlighting Showcase</a>
+                                </h3>
+                                
+                                <p class="post-description">Demonstrates syntax highlighting across multiple languages</p>
+                                
+                                <div class="post-meta">
+                                    
+                                    <span class="post-author">by blogr</span>
+                                    
+                                    
+                                </div>
+                                
+                                <div class="post-tags">
+                                    
+                                    <a href="/tags/syntax-highlighting.html" class="tag">#syntax-highlighting</a>
+                                    
+                                    <a href="/tags/code.html" class="tag">#code</a>
+                                    
+                                    <a href="/tags/demo.html" class="tag">#demo</a>
+                                    
+                                </div>
+                                
+                            </div>
+                        </article>
+                        
+                    </div>
+                </section>
+                
+            
+        </div>
+    
+
+    <div class="archive-navigation">
+        <a href="/" class="back-home">← Home</a>
+        <a href="/tags/index.html" class="view-tags">View Tags →</a>
+    </div>
+</div>
+
+        </main>
+
+        <!-- Minimal footer -->
+        <footer class="site-footer">
+            <div class="footer-content">
+                <p class="author-credit">blogr</p>
+                <div class="footer-links">
+                    
+                    <span class="separator">·</span>
+                    <a href="https://github.com/bahdotsh/blogr" target="_blank" rel="noopener" class="blogr-link">blogr</a>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Search functionality -->
+    <script src="/js/vendor/minisearch.min.js"></script>
+    <script src="/js/search.js"></script>
+    
+    
+    <script>
+    MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']]
+      }
+    };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    
+    
+</body>
+</html>

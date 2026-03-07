@@ -78,7 +78,7 @@ class BlogrSearch {
                 fields: ['title', 'tags', 'content'],
                 storeFields: ['title', 'url', 'date', 'tags', 'excerpt', 'description'],
                 searchOptions: {
-                    boost: {"content":1.0,"tags":3.0,"title":5.0},
+                    boost: {"title":5.0,"tags":3.0,"content":1.0},
                     prefix: true,
                     fuzzy: 0.2
                 }
@@ -280,13 +280,13 @@ class BlogrSearch {
             const results = this.miniSearch.search(trimmedQuery, {
                 prefix: true,
                 fuzzy: 0.2,
-                boost: {"content":1.0,"tags":3.0,"title":5.0}
+                boost: {"title":5.0,"tags":3.0,"content":1.0}
             }).slice(0, this.options.maxResults);
             // Keep full set for pagination; we will manage limits during render
             this.currentResults = this.miniSearch.search(trimmedQuery, {
                 prefix: true,
                 fuzzy: 0.2,
-                boost: {"content":1.0,"tags":3.0,"title":5.0}
+                boost: {"title":5.0,"tags":3.0,"content":1.0}
             });
             this.currentLimit = this.options.maxResults;
             this.renderResults(this.currentResults, trimmedQuery);

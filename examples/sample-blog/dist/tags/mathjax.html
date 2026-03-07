@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>syntax-highlighting - Syntax Highlighting Demo</title>
+    <title>mathjax - Sample Blog</title>
 
     
-<meta name="description" content="Posts exploring syntax-highlighting on Syntax Highlighting Demo">
+<meta name="description" content="Posts exploring mathjax on Sample Blog">
 
 
     <!-- Artistic Fonts -->
@@ -24,10 +24,10 @@
         <!-- Minimal header with title and search -->
         <header class="site-header">
             <h1 class="site-title">
-                <a href="/">Syntax Highlighting Demo</a>
+                <a href="/">Sample Blog</a>
             </h1>
             
-            <p class="site-subtitle">A sample project demonstrating syntax highlighting in code blocks</p>
+            <p class="site-subtitle">A sample blogr project showcasing various features</p>
             
             
             <!-- Search form -->
@@ -60,7 +60,7 @@
     <header class="tag-collection-header">
         <div class="tag-display">
             <span class="tag-symbol">#</span>
-            <h1 class="tag-name">syntax-highlighting</h1>
+            <h1 class="tag-name">mathjax</h1>
         </div>
         <p class="tag-description">
             1 story exploring this theme
@@ -80,11 +80,11 @@
             
             <div class="story-content">
                 <h2 class="story-title">
-                    <a href="/posts/syntax-highlighting-showcase.html">Syntax Highlighting Showcase</a>
+                    <a href="/posts/mathjax-demo.html">MathJax Rendering Demo</a>
                 </h2>
                 
                 
-                <p class="story-excerpt">Demonstrates syntax highlighting across multiple languages</p>
+                <p class="story-excerpt">Demonstrates LaTeX math rendering with MathJax</p>
                 
                 
                 <!-- Other tags for this post -->
@@ -93,9 +93,9 @@
                     <span class="also-tagged">also:</span>
                     
                         
-                    
+                        <a href="/tags/math.html" class="other-tag">math</a>, 
                         
-                        <a href="/tags/code.html" class="other-tag">code</a>, 
+                    
                         
                     
                         
@@ -318,6 +318,17 @@
     <!-- Search functionality -->
     <script src="/js/vendor/minisearch.min.js"></script>
     <script src="/js/search.js"></script>
+    
+    
+    <script>
+    MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']]
+      }
+    };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
     
     
 </body>

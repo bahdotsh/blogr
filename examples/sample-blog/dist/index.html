@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Syntax Highlighting Demo</title>
+    <title>Sample Blog</title>
 
     
-    <meta name="description" content="A sample project demonstrating syntax highlighting in code blocks">
+    <meta name="description" content="A sample blogr project showcasing various features">
     <meta name="author" content="blogr">
     
 
@@ -25,10 +25,10 @@
         <!-- Minimal header with title and search -->
         <header class="site-header">
             <h1 class="site-title">
-                <a href="/">Syntax Highlighting Demo</a>
+                <a href="/">Sample Blog</a>
             </h1>
             
-            <p class="site-subtitle">A sample project demonstrating syntax highlighting in code blocks</p>
+            <p class="site-subtitle">A sample blogr project showcasing various features</p>
             
             
             <!-- Search form -->
@@ -62,6 +62,113 @@
         <article class="post-entry" data-post-id="1">
             <!-- Post Header -->
             <header class="post-entry-header" onclick="togglePost(1)">
+                <h2 class="post-entry-title">MathJax Rendering Demo</h2>
+                
+                <div class="post-entry-meta">
+                    <time class="post-date">Mar 07, 2026</time>
+                    
+                    
+                    <span class="post-author">blogr</span>
+                    
+                    
+                    
+                    <span class="reading-time">1min</span>
+                    
+                </div>
+
+                <!-- Tags as artistic elements -->
+                
+                <div class="post-tags-preview">
+                    
+                    <span class="tag-bubble">math</span>
+                    
+                    <span class="tag-bubble">mathjax</span>
+                    
+                    <span class="tag-bubble">demo</span>
+                    
+                </div>
+                
+
+                <!-- Expand indicator -->
+                <div class="expand-indicator">
+                    <span class="expand-text">read</span>
+                    <span class="expand-arrow">↓</span>
+                </div>
+            </header>
+
+            <!-- Expandable Content -->
+            <div class="post-entry-content" id="post-content-1">
+                
+                <div class="post-description">
+                    Demonstrates LaTeX math rendering with MathJax
+                </div>
+                
+                
+                <div class="post-full-content">
+                    <h1>MathJax Rendering Demo</h1>
+<p>This post demonstrates how blogr renders LaTeX math expressions using MathJax.
+You can use inline math with single dollar signs and display math with double
+dollar signs.</p>
+<h2>Inline Math</h2>
+<p>Einstein's famous equation \(E = mc^{2}\) shows the equivalence of mass and
+energy. The quadratic formula \(x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}\) gives
+the roots of any quadratic equation \(ax^2 + bx + c = 0\).</p>
+<h2>Display Math</h2>
+<p>The Gaussian integral:</p>
+<p>\[\int_{-\infty}^{\infty} e^{-x^2} \, dx = \sqrt{\pi}\]</p>
+<p>Euler's identity:</p>
+<p>\[e^{i\pi} + 1 = 0\]</p>
+<p>A summation formula:</p>
+<p>\[\sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6}\]</p>
+<h2>Matrices</h2>
+<p>A 2x2 matrix and its determinant:</p>
+<p>\[A = \begin{pmatrix} a & b \\ c & d \end{pmatrix}, \quad \det(A) = ad - bc\]</p>
+<h2>Calculus</h2>
+<p>The fundamental theorem of calculus:</p>
+<p>\[\int_a^b f'(x) \, dx = f(b) - f(a)\]</p>
+<p>Taylor series expansion of \(e^x\):</p>
+<p>\[e^x = \sum_{n=0}^{\infty} \frac{x^n}{n!} = 1 + x + \frac{x^2}{2!} + \frac{x^3}{3!} + \cdots\]</p>
+<h2>Mixing Math and Code</h2>
+<p>You can combine math with code blocks. Here is a Python implementation of the
+quadratic formula \(x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}\):</p>
+<pre class="highlight"><code class="language-python"><span style="color:#b48ead;">import </span><span style="color:#c0c5ce;">math
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">quadratic</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">a</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">b</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">c</span><span style="color:#c0c5ce;">):
+</span><span style="color:#c0c5ce;">    discriminant = b**</span><span style="color:#d08770;">2 </span><span style="color:#c0c5ce;">- </span><span style="color:#d08770;">4</span><span style="color:#c0c5ce;">*a*c
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">if </span><span style="color:#c0c5ce;">discriminant &lt; </span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">:
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">raise </span><span style="color:#c0c5ce;">ValueError(&quot;</span><span style="color:#a3be8c;">No real roots</span><span style="color:#c0c5ce;">&quot;)
+</span><span style="color:#c0c5ce;">    x1 = (-b + math.</span><span style="color:#8fa1b3;">sqrt</span><span style="color:#c0c5ce;">(discriminant)) / (</span><span style="color:#d08770;">2</span><span style="color:#c0c5ce;">*a)
+</span><span style="color:#c0c5ce;">    x2 = (-b - math.</span><span style="color:#8fa1b3;">sqrt</span><span style="color:#c0c5ce;">(discriminant)) / (</span><span style="color:#d08770;">2</span><span style="color:#c0c5ce;">*a)
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">x1, x2
+</span></code></pre>
+                </div>
+
+                <!-- Post Footer with full tags -->
+                <footer class="post-entry-footer">
+                    
+                    <div class="post-tags-full">
+                        <span class="tags-label">tagged:</span>
+                        
+                        <a href="/tags/math.html" class="tag-link">math</a>, 
+                        
+                        <a href="/tags/mathjax.html" class="tag-link">mathjax</a>, 
+                        
+                        <a href="/tags/demo.html" class="tag-link">demo</a>
+                        
+                    </div>
+                    
+
+                    <div class="post-actions">
+                        <a href="/posts/mathjax-demo.html" class="permalink">permalink</a>
+                        <button class="collapse-btn" onclick="togglePost(1)">collapse</button>
+                    </div>
+                </footer>
+            </div>
+        </article>
+        
+        <article class="post-entry" data-post-id="2">
+            <!-- Post Header -->
+            <header class="post-entry-header" onclick="togglePost(2)">
                 <h2 class="post-entry-title">Syntax Highlighting Showcase</h2>
                 
                 <div class="post-entry-meta">
@@ -97,7 +204,7 @@
             </header>
 
             <!-- Expandable Content -->
-            <div class="post-entry-content" id="post-content-1">
+            <div class="post-entry-content" id="post-content-2">
                 
                 <div class="post-description">
                     Demonstrates syntax highlighting across multiple languages
@@ -212,7 +319,7 @@ println!(&quot;{}&quot;, x + y);
 
                     <div class="post-actions">
                         <a href="/posts/syntax-highlighting-showcase.html" class="permalink">permalink</a>
-                        <button class="collapse-btn" onclick="togglePost(1)">collapse</button>
+                        <button class="collapse-btn" onclick="togglePost(2)">collapse</button>
                     </div>
                 </footer>
             </div>
@@ -238,9 +345,9 @@ println!(&quot;{}&quot;, x + y);
 let currentPage = 1;
 let isLoading = false;
 let hasMorePosts = false;
-let totalPosts = 1;
-let loadedPosts = 1;
-let maxPostId = 1;
+let totalPosts = 2;
+let loadedPosts = 2;
+let maxPostId = 2;
 
 function togglePost(postId) {
     const content = document.getElementById('post-content-' + postId);
@@ -453,6 +560,17 @@ document.addEventListener('DOMContentLoaded', function() {
     <!-- Search functionality -->
     <script src="/js/vendor/minisearch.min.js"></script>
     <script src="/js/search.js"></script>
+    
+    
+    <script>
+    MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']]
+      }
+    };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
     
     
 </body>

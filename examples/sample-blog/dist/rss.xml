@@ -1,13 +1,56 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
   <channel>
-    <title><![CDATA[Syntax Highlighting Demo]]></title>
+    <title><![CDATA[Sample Blog]]></title>
     <link>https://example.com</link>
     <atom:link href="https://example.com/rss.xml" rel="self" type="application/rss+xml" />
-    <description><![CDATA[A sample project demonstrating syntax highlighting in code blocks]]></description>
+    <description><![CDATA[A sample blogr project showcasing various features]]></description>
     <language>en</language>
-    <lastBuildDate>Sat, 07 Mar 2026 06:22:02 +0000</lastBuildDate>
+    <lastBuildDate>Sat, 07 Mar 2026 06:54:02 +0000</lastBuildDate>
     <generator>Blogr Static Site Generator</generator>
+    <item>
+      <title><![CDATA[MathJax Rendering Demo]]></title>
+      <link>https://example.com/posts/mathjax-demo.html</link>
+      <guid>https://example.com/posts/mathjax-demo.html</guid>
+      <description><![CDATA[<h1>MathJax Rendering Demo</h1>
+<p>This post demonstrates how blogr renders LaTeX math expressions using MathJax.
+You can use inline math with single dollar signs and display math with double
+dollar signs.</p>
+<h2>Inline Math</h2>
+<p>Einstein's famous equation \(E = mc^{2}\) shows the equivalence of mass and
+energy. The quadratic formula \(x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}\) gives
+the roots of any quadratic equation \(ax^2 + bx + c = 0\).</p>
+<h2>Display Math</h2>
+<p>The Gaussian integral:</p>
+<p>\[\int_{-\infty}^{\infty} e^{-x^2} \, dx = \sqrt{\pi}\]</p>
+<p>Euler's identity:</p>
+<p>\[e^{i\pi} + 1 = 0\]</p>
+<p>A summation formula:</p>
+<p>\[\sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6}\]</p>
+<h2>Matrices</h2>
+<p>A 2x2 matrix and its determinant:</p>
+<p>\[A = \begin{pmatrix} a & b \\ c & d \end{pmatrix}, \quad \det(A) = ad - bc\]</p>
+<h2>Calculus</h2>
+<p>The fundamental theorem of calculus:</p>
+<p>\[\int_a^b f'(x) \, dx = f(b) - f(a)\]</p>
+<p>Taylor series expansion of \(e^x\):</p>
+<p>\[e^x = \sum_{n=0}^{\infty} \frac{x^n}{n!} = 1 + x + \frac{x^2}{2!} + \frac{x^3}{3!} + \cdots\]</p>
+<h2>Mixing Math and Code</h2>
+<p>You can combine math with code blocks. Here is a Python implementation of the
+quadratic formula \(x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}\):</p>
+<pre class="highlight"><code class="language-python"><span style="color:#b48ead;">import </span><span style="color:#c0c5ce;">math
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">quadratic</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">a</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">b</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">c</span><span style="color:#c0c5ce;">):
+</span><span style="color:#c0c5ce;">    discriminant = b**</span><span style="color:#d08770;">2 </span><span style="color:#c0c5ce;">- </span><span style="color:#d08770;">4</span><span style="color:#c0c5ce;">*a*c
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">if </span><span style="color:#c0c5ce;">discriminant &lt; </span><span style="color:#d08770;">0</span><span style="color:#c0c5ce;">:
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">raise </span><span style="color:#c0c5ce;">ValueError(&quot;</span><span style="color:#a3be8c;">No real roots</span><span style="color:#c0c5ce;">&quot;)
+</span><span style="color:#c0c5ce;">    x1 = (-b + math.</span><span style="color:#8fa1b3;">sqrt</span><span style="color:#c0c5ce;">(discriminant)) / (</span><span style="color:#d08770;">2</span><span style="color:#c0c5ce;">*a)
+</span><span style="color:#c0c5ce;">    x2 = (-b - math.</span><span style="color:#8fa1b3;">sqrt</span><span style="color:#c0c5ce;">(discriminant)) / (</span><span style="color:#d08770;">2</span><span style="color:#c0c5ce;">*a)
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">x1, x2
+</span></code></pre>]]></description>
+      <pubDate>Sat, 07 Mar 2026 00:00:00 +0000</pubDate>
+      <author>blogr</author>
+    </item>
     <item>
       <title><![CDATA[Syntax Highlighting Showcase]]></title>
       <link>https://example.com/posts/syntax-highlighting-showcase.html</link>
