@@ -78,6 +78,17 @@
     <script src="{{ url(path='js/vendor/minisearch.min.js') | safe }}"></script>
     <script src="{{ url(path='js/search.js') | safe }}"></script>
     
+    {% if site.math.enabled %}
+    <script>
+    MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']]
+      }
+    };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    {% endif %}
     {% block extra_scripts %}{% endblock %}
 </body>
 </html>

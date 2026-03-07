@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use anyhow::Result;
-use pulldown_cmark::{html, CodeBlockKind, Event, Options, Parser, Tag};
+use pulldown_cmark::{html, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::html::{styled_line_to_highlighted_html, IncludeBackground};
@@ -18,6 +18,7 @@ pub fn render_markdown(markdown: &str) -> Result<String> {
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_FOOTNOTES);
     options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_MATH);
 
     let parser = Parser::new_ext(markdown, options);
 
@@ -47,7 +48,7 @@ pub fn render_markdown(markdown: &str) -> Result<String> {
                     format!("<pre class=\"highlight\"><code{}>", class_attr).into(),
                 ));
             }
-            Event::End(Tag::CodeBlock(_)) => {
+            Event::End(TagEnd::CodeBlock) => {
                 let lang = current_lang.take().unwrap_or_default();
                 if !lang.is_empty() && !code_buf.is_empty() {
                     match highlight_code(&code_buf, &lang) {
@@ -62,6 +63,12 @@ pub fn render_markdown(markdown: &str) -> Result<String> {
             }
             Event::Text(text) if current_lang.is_some() => {
                 code_buf.push_str(&text);
+            }
+            Event::InlineMath(text) => {
+                events.push(Event::InlineHtml(format!("\\({}\\)", text).into()));
+            }
+            Event::DisplayMath(text) => {
+                events.push(Event::Html(format!("\\[{}\\]", text).into()));
             }
             _ => events.push(event),
         }
@@ -218,5 +225,21 @@ mod tests {
         let html = render_markdown(md).unwrap();
         assert!(html.contains("<pre class=\"highlight\">"));
         assert!(html.contains("</code></pre>"));
+    }
+
+    #[test]
+    fn test_inline_and_display_math() {
+        let md = "Inline $E = mc^{2}$ and display:\n\n$$\\sum_{i=1}^{n} i$$\n";
+        let html = render_markdown(md).unwrap();
+        assert!(
+            html.contains("\\(E = mc^{2}\\)"),
+            "Expected inline math delimiters, got: {}",
+            html
+        );
+        assert!(
+            html.contains("\\[\\sum_{i=1}^{n} i\\]"),
+            "Expected display math delimiters, got: {}",
+            html
+        );
     }
 }
