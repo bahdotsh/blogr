@@ -259,7 +259,12 @@ impl MigrationManager {
                                     self.database.get_subscriber_by_email(&sub.email)
                                 {
                                     if let Some(id) = db_sub.id {
-                                        let _ = self.database.add_tags_batch(id, tags);
+                                        if let Err(e) = self.database.add_tags_batch(id, tags) {
+                                            eprintln!(
+                                                "Warning: failed to add tags for {}: {}",
+                                                sub.email, e
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -573,7 +578,9 @@ impl MigrationManager {
                 return Ok(dt.and_utc());
             }
             if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, format) {
-                return Ok(date.and_hms_opt(0, 0, 0).unwrap().and_utc());
+                if let Some(datetime) = date.and_hms_opt(0, 0, 0) {
+                    return Ok(datetime.and_utc());
+                }
             }
         }
 

@@ -337,7 +337,8 @@ impl NewsletterDatabase {
             .unwrap_or(false);
 
         if !has_declined_at {
-            let _ = conn.execute_batch("ALTER TABLE subscribers ADD COLUMN declined_at DATETIME");
+            conn.execute_batch("ALTER TABLE subscribers ADD COLUMN declined_at DATETIME")
+                .context("Migration failed: could not add declined_at column")?;
         }
 
         // Migration: add soft_bounce_count column if it doesn't exist
@@ -350,9 +351,10 @@ impl NewsletterDatabase {
             .unwrap_or(false);
 
         if !has_soft_bounce {
-            let _ = conn.execute_batch(
+            conn.execute_batch(
                 "ALTER TABLE subscribers ADD COLUMN soft_bounce_count INTEGER NOT NULL DEFAULT 0",
-            );
+            )
+            .context("Migration failed: could not add soft_bounce_count column")?;
         }
 
         // Migration: remove CHECK constraint on status column for existing databases.
@@ -1088,6 +1090,7 @@ impl NewsletterDatabase {
     }
 
     /// Get subscribers by tag with optional pagination
+    #[allow(dead_code)]
     pub fn get_subscribers_by_tag(&self, tag: &str) -> Result<Vec<Subscriber>> {
         self.get_subscribers_by_tag_paginated(tag, None, None)
     }
@@ -1108,17 +1111,25 @@ impl NewsletterDatabase {
              WHERE st.tag = ?1
              ORDER BY s.subscribed_at DESC",
         );
+        let mut params: Vec<String> = vec![tag.to_string()];
 
         if let Some(limit) = limit {
-            query.push_str(&format!(" LIMIT {}", limit));
+            let idx = params.len() + 1;
+            query.push_str(&format!(" LIMIT ?{}", idx));
+            params.push(limit.to_string());
         }
         if let Some(offset) = offset {
-            query.push_str(&format!(" OFFSET {}", offset));
+            let idx = params.len() + 1;
+            query.push_str(&format!(" OFFSET ?{}", idx));
+            params.push(offset.to_string());
         }
 
         let mut stmt = conn.prepare(&query)?;
         let subscribers = stmt
-            .query_map(params![tag], Self::row_to_subscriber)?
+            .query_map(
+                rusqlite::params_from_iter(params.iter()),
+                Self::row_to_subscriber,
+            )?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -1760,7 +1771,10 @@ mod tests {
         assert_eq!(db.get_tags(id)?.len(), 2);
 
         // set_tags should atomically replace all tags
-        db.set_tags(id, &["new1".to_string(), "new2".to_string(), "new3".to_string()])?;
+        db.set_tags(
+            id,
+            &["new1".to_string(), "new2".to_string(), "new3".to_string()],
+        )?;
         let tags = db.get_tags(id)?;
         assert_eq!(tags, vec!["new1", "new2", "new3"]);
 

@@ -335,7 +335,10 @@ impl NewsletterSender {
                 break;
             }
 
-            let mut tasks = Vec::with_capacity(batch.len());
+            // Track (item_id, email) before spawning so we can handle panics
+            type SendResult = (i64, String, Result<(), String>);
+            let mut tasks: Vec<(i64, String, tokio::task::JoinHandle<SendResult>)> =
+                Vec::with_capacity(batch.len());
 
             for item in batch {
                 // Skip items that have exceeded max retries
@@ -366,6 +369,9 @@ impl NewsletterSender {
                 let processed = Arc::clone(&processed);
                 let task_total = total;
 
+                let task_item_id = item.id;
+                let task_email = item.subscriber_email.clone();
+
                 let task = tokio::spawn(async move {
                     let result = send_single_email_async(
                         &transport,
@@ -394,7 +400,7 @@ impl NewsletterSender {
                     }
                 });
 
-                tasks.push(task);
+                tasks.push((task_item_id, task_email, task));
             }
 
             // Collect results and batch-update the database
@@ -402,7 +408,7 @@ impl NewsletterSender {
             let mut recipient_records: Vec<(String, &str, Option<String>)> = Vec::new();
             let mut bounce_events: Vec<(String, BounceType, String)> = Vec::new();
 
-            for task in tasks {
+            for (tracked_id, tracked_email, task) in tasks {
                 match task.await {
                     Ok((item_id, email, Ok(()))) => {
                         report.add_success();
@@ -420,7 +426,17 @@ impl NewsletterSender {
                         recipient_records.push((email, "failed", Some(error_msg)));
                     }
                     Err(join_err) => {
-                        eprintln!("Task panicked: {}", join_err);
+                        // Task panicked — use the tracked id/email to mark as failed
+                        // so the item doesn't stay in pending state forever
+                        let error_msg = format!("Task panicked: {}", join_err);
+                        eprintln!("{}", error_msg);
+                        report.add_error(tracked_email.clone(), error_msg.clone());
+                        db_updates.push((
+                            tracked_id,
+                            SendQueueStatus::Failed,
+                            Some(error_msg.clone()),
+                        ));
+                        recipient_records.push((tracked_email, "failed", Some(error_msg)));
                     }
                 }
             }
@@ -435,12 +451,16 @@ impl NewsletterSender {
 
             // Record any detected bounces
             for (email, bounce_type, reason) in &bounce_events {
-                let _ = database.record_bounce(email, bounce_type, Some(reason));
+                if let Err(e) = database.record_bounce(email, bounce_type, Some(reason)) {
+                    eprintln!("Failed to record bounce for {}: {}", email, e);
+                }
             }
 
             // Save progress after each batch
             if let Some(root) = project_root {
-                let _ = report.save_progress(root);
+                if let Err(e) = report.save_progress(root) {
+                    eprintln!("Failed to save send progress: {}", e);
+                }
             }
         }
 
