@@ -529,7 +529,9 @@ pub async fn handle_send_latest(interactive: bool) -> Result<()> {
 
     // Send newsletter
     println!("📤 Sending newsletter...");
-    let report = newsletter_manager.send_newsletter(&newsletter, interactive)?;
+    let report = newsletter_manager
+        .send_newsletter(&newsletter, interactive)
+        .await?;
 
     println!("✅ Newsletter sending completed!");
     println!("📊 Success rate: {:.1}%", report.success_rate() * 100.0);
@@ -572,7 +574,9 @@ pub async fn handle_send_custom(subject: String, content: String, interactive: b
 
     // Send newsletter
     println!("📤 Sending newsletter...");
-    let report = newsletter_manager.send_newsletter(&newsletter, interactive)?;
+    let report = newsletter_manager
+        .send_newsletter(&newsletter, interactive)
+        .await?;
 
     println!("✅ Newsletter sending completed!");
     println!("📊 Success rate: {:.1}%", report.success_rate() * 100.0);

@@ -353,7 +353,7 @@ impl NewsletterManager {
             ))?;
 
         let sender_name = self.config.newsletter.sender_name.clone();
-        let rate_limit = emails_per_minute.unwrap_or(10);
+        let rate_limit = emails_per_minute.unwrap_or(100);
         let hmac_secret = self.get_hmac_secret()?;
 
         NewsletterSender::new(smtp_config, sender_name, rate_limit, hmac_secret)
@@ -374,13 +374,13 @@ impl NewsletterManager {
         composer.compose_from_post(latest_post)
     }
 
-    /// Send newsletter to all approved subscribers
-    pub fn send_newsletter(
+    /// Send newsletter to all approved subscribers using the async queue-based sender
+    pub async fn send_newsletter(
         &self,
         newsletter: &Newsletter,
         interactive: bool,
     ) -> Result<super::sender::SendReport> {
-        let mut sender = self.create_sender(None)?;
+        let sender = self.create_sender(None)?;
 
         let password = if interactive {
             Self::prompt_for_password("SMTP")?
@@ -388,18 +388,9 @@ impl NewsletterManager {
             self.get_smtp_password()?
         };
 
-        // Only fetch approved subscribers
-        let subscribers = self
-            .database
-            .get_subscribers(Some(super::database::SubscriberStatus::Approved))?;
-
-        sender.send_to_subscribers(
-            newsletter,
-            &subscribers,
-            &password,
-            Some(&self.database),
-            None,
-        )
+        sender
+            .send_with_queue(newsletter, &self.database, &password, None)
+            .await
     }
 
     /// Send test newsletter
