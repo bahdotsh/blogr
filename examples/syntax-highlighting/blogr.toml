@@ -1,0 +1,22 @@
+[blog]
+title = "Syntax Highlighting Demo"
+author = "blogr"
+description = "A sample project demonstrating syntax highlighting in code blocks"
+base_url = "https://example.com"
+language = "en"
+timezone = "UTC"
+
+[theme]
+name = "Minimal Retro"
+
+[build]
+output_dir = "dist"
+drafts = false
+future_posts = false
+
+[dev]
+port = 3000
+auto_reload = true
+
+[search]
+enabled = false
