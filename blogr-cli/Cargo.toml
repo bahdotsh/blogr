@@ -52,7 +52,7 @@ r2d2 = "0.8"
 r2d2_sqlite = "0.31"
 lettre = { version = "0.11", features = ["tokio1-native-tls"] }
 html2text = "0.6"
-css-inline = "0.18"
+css-inline = "0.20"
 rpassword = "5.0"
 base64 = "0.22"
 hmac = "0.12"
