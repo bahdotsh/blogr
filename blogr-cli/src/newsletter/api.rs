@@ -14,6 +14,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
@@ -56,27 +57,29 @@ const MAX_CONFIRMATION_TASKS: usize = 10;
 /// Maximum page size for list/export endpoints to prevent OOM on large databases.
 const MAX_PAGE_SIZE: usize = 1000;
 
-/// Simple sliding-window rate limiter.
-/// Tracks request timestamps within a 60-second window and rejects
-/// requests that exceed the configured limit.
+/// Per-IP sliding-window rate limiter.
+/// Tracks request timestamps per client IP within a 60-second window
+/// and rejects requests that exceed the configured limit.
 #[derive(Clone)]
 struct RateLimiter {
-    timestamps: Arc<Mutex<VecDeque<std::time::Instant>>>,
+    buckets: Arc<Mutex<HashMap<IpAddr, VecDeque<std::time::Instant>>>>,
     max_requests: u32,
 }
 
 impl RateLimiter {
     fn new(max_requests_per_minute: u32) -> Self {
         Self {
-            timestamps: Arc::new(Mutex::new(VecDeque::new())),
+            buckets: Arc::new(Mutex::new(HashMap::new())),
             max_requests: max_requests_per_minute,
         }
     }
 
-    async fn check(&self) -> bool {
-        let mut timestamps = self.timestamps.lock().await;
+    async fn check(&self, ip: IpAddr) -> bool {
+        let mut buckets = self.buckets.lock().await;
         let now = std::time::Instant::now();
         let window = std::time::Duration::from_secs(60);
+
+        let timestamps = buckets.entry(ip).or_default();
 
         // Remove timestamps outside the window
         while timestamps
@@ -93,11 +96,29 @@ impl RateLimiter {
         timestamps.push_back(now);
         true
     }
+
+    /// Remove entries for IPs with no recent requests to prevent unbounded growth.
+    async fn cleanup_stale_entries(&self) {
+        let mut buckets = self.buckets.lock().await;
+        let now = std::time::Instant::now();
+        let window = std::time::Duration::from_secs(60);
+        buckets.retain(|_, timestamps| {
+            timestamps
+                .back()
+                .is_some_and(|t| now.duration_since(*t) <= window)
+        });
+    }
 }
 
 /// Rate limiting middleware
 async fn rate_limit_middleware(req: Request, next: Next, limiter: Arc<RateLimiter>) -> Response {
-    if !limiter.check().await {
+    let ip = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip())
+        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+
+    if !limiter.check(ip).await {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(ApiResponse::<()>::error(
@@ -244,6 +265,30 @@ impl NewsletterApiServer {
             "{}:{}",
             self.state.api_config.host, self.state.api_config.port
         );
+
+        // Spawn periodic database cleanup (every 6 hours)
+        let db_manager = Arc::clone(&self.state.newsletter_manager);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+            interval.tick().await; // skip the immediate first tick
+            loop {
+                interval.tick().await;
+                let db = db_manager.database();
+                if let Err(e) = db.cleanup_expired_tokens() {
+                    eprintln!("Warning: periodic cleanup of expired tokens failed: {}", e);
+                }
+                if let Err(e) = db.cleanup_completed_send_queue() {
+                    eprintln!("Warning: periodic cleanup of send queue failed: {}", e);
+                }
+                if let Err(e) = db.cleanup_old_send_recipients(90) {
+                    eprintln!(
+                        "Warning: periodic cleanup of old send recipients failed: {}",
+                        e
+                    );
+                }
+            }
+        });
+
         let app = self.create_router();
 
         println!("Starting Newsletter API server on {}", addr);
@@ -333,6 +378,15 @@ impl NewsletterApiServer {
         if let Some(limit) = rate_limit {
             if limit > 0 {
                 let limiter = Arc::new(RateLimiter::new(limit));
+                // Periodically evict stale per-IP entries (every 5 minutes)
+                let cleanup_limiter = Arc::clone(&limiter);
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+                    loop {
+                        interval.tick().await;
+                        cleanup_limiter.cleanup_stale_entries().await;
+                    }
+                });
                 app = app.layer(middleware::from_fn(move |req, next| {
                     let limiter = Arc::clone(&limiter);
                     rate_limit_middleware(req, next, limiter)
@@ -1179,5 +1233,74 @@ mod tests {
         assert!(result.is_ok());
         let stats = result.unwrap().0.data.unwrap();
         assert_eq!(stats.total_subscribers, 0);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_allows_within_limit() {
+        let limiter = RateLimiter::new(5);
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+
+        for _ in 0..5 {
+            assert!(
+                limiter.check(ip).await,
+                "should allow requests within limit"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_rejects_over_limit() {
+        let limiter = RateLimiter::new(3);
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+
+        assert!(limiter.check(ip).await);
+        assert!(limiter.check(ip).await);
+        assert!(limiter.check(ip).await);
+        assert!(!limiter.check(ip).await, "should reject the 4th request");
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_isolates_ips() {
+        let limiter = RateLimiter::new(2);
+        let ip1: IpAddr = "10.0.0.1".parse().unwrap();
+        let ip2: IpAddr = "10.0.0.2".parse().unwrap();
+
+        // Exhaust limit for ip1
+        assert!(limiter.check(ip1).await);
+        assert!(limiter.check(ip1).await);
+        assert!(!limiter.check(ip1).await);
+
+        // ip2 should still be allowed
+        assert!(
+            limiter.check(ip2).await,
+            "different IP should have its own bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_cleanup_stale_entries() {
+        let limiter = RateLimiter::new(100);
+        let ip: IpAddr = "192.168.1.1".parse().unwrap();
+
+        // Add a request so the IP has an entry
+        assert!(limiter.check(ip).await);
+        {
+            let buckets = limiter.buckets.lock().await;
+            assert!(buckets.contains_key(&ip));
+        }
+
+        // Manually expire the entry by clearing timestamps
+        {
+            let mut buckets = limiter.buckets.lock().await;
+            buckets.get_mut(&ip).unwrap().clear();
+        }
+
+        limiter.cleanup_stale_entries().await;
+
+        let buckets = limiter.buckets.lock().await;
+        assert!(
+            !buckets.contains_key(&ip),
+            "stale IP entry should be cleaned up"
+        );
     }
 }

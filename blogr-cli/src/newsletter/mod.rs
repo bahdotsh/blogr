@@ -198,6 +198,7 @@ mod tests {
         assert!(!is_valid_tag("has\nnewline")); // control char
         assert!(!is_valid_tag("has\ttab")); // control char
         assert!(!is_valid_tag(&"x".repeat(MAX_TAG_LENGTH + 1))); // too long
+        assert!(!is_valid_tag("   ")); // whitespace only
     }
 
     #[test]

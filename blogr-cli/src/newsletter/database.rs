@@ -499,7 +499,9 @@ impl NewsletterDatabase {
         Ok(count)
     }
 
-    /// Update subscriber status
+    /// Update subscriber status.
+    /// Maintains clean state transitions: approving clears declined_at,
+    /// declining clears approved_at, and resetting clears both.
     pub fn update_subscriber_status(&self, id: i64, status: SubscriberStatus) -> Result<()> {
         let now = Utc::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
 
@@ -507,13 +509,13 @@ impl NewsletterDatabase {
         match status {
             SubscriberStatus::Approved => {
                 conn.execute(
-                    "UPDATE subscribers SET status = ?1, approved_at = ?2 WHERE id = ?3",
+                    "UPDATE subscribers SET status = ?1, approved_at = ?2, declined_at = NULL WHERE id = ?3",
                     params![status.to_string(), now, id],
                 )?;
             }
             SubscriberStatus::Declined => {
                 conn.execute(
-                    "UPDATE subscribers SET status = ?1, declined_at = ?2 WHERE id = ?3",
+                    "UPDATE subscribers SET status = ?1, declined_at = ?2, approved_at = NULL WHERE id = ?3",
                     params![status.to_string(), now, id],
                 )?;
             }
@@ -2038,6 +2040,108 @@ mod tests {
         let good = vec!["alpha".to_string(), "beta".to_string()];
         assert!(db.set_tags(id, &good).is_ok());
         assert_eq!(db.get_tags(id)?, vec!["alpha", "beta"]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_status_by_id_approve_clears_declined() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        let sub = Subscriber::new("byid@example.com".to_string(), None);
+        let id = db.add_subscriber(&sub)?;
+
+        // Decline first
+        db.update_subscriber_status(id, SubscriberStatus::Declined)?;
+        let s = db.get_subscriber_by_email("byid@example.com")?.unwrap();
+        assert!(s.declined_at.is_some());
+
+        // Approve — declined_at must be cleared
+        db.update_subscriber_status(id, SubscriberStatus::Approved)?;
+        let s = db.get_subscriber_by_email("byid@example.com")?.unwrap();
+        assert_eq!(s.status, SubscriberStatus::Approved);
+        assert!(s.approved_at.is_some());
+        assert!(
+            s.declined_at.is_none(),
+            "declined_at should be cleared when approving by ID"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_status_by_id_decline_clears_approved() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        let sub = Subscriber::new("byid2@example.com".to_string(), None);
+        let id = db.add_subscriber(&sub)?;
+
+        // Approve first
+        db.update_subscriber_status(id, SubscriberStatus::Approved)?;
+        let s = db.get_subscriber_by_email("byid2@example.com")?.unwrap();
+        assert!(s.approved_at.is_some());
+
+        // Decline — approved_at must be cleared
+        db.update_subscriber_status(id, SubscriberStatus::Declined)?;
+        let s = db.get_subscriber_by_email("byid2@example.com")?.unwrap();
+        assert_eq!(s.status, SubscriberStatus::Declined);
+        assert!(s.declined_at.is_some());
+        assert!(
+            s.approved_at.is_none(),
+            "approved_at should be cleared when declining by ID"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_status_by_id_reset_clears_both_timestamps() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        let sub = Subscriber::new("byid3@example.com".to_string(), None);
+        let id = db.add_subscriber(&sub)?;
+
+        // Approve, then reset to Pending
+        db.update_subscriber_status(id, SubscriberStatus::Approved)?;
+        db.update_subscriber_status(id, SubscriberStatus::Pending)?;
+        let s = db.get_subscriber_by_email("byid3@example.com")?.unwrap();
+        assert_eq!(s.status, SubscriberStatus::Pending);
+        assert!(s.approved_at.is_none());
+        assert!(s.declined_at.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_reapproval_updates_approved_at() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        let sub = Subscriber::new("reapprove@example.com".to_string(), None);
+        let id = db.add_subscriber(&sub)?;
+
+        // First approval
+        db.update_subscriber_status(id, SubscriberStatus::Approved)?;
+        let s1 = db
+            .get_subscriber_by_email("reapprove@example.com")?
+            .unwrap();
+        let first_approved = s1.approved_at.unwrap();
+
+        // Small delay to ensure timestamps differ
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        // Decline then re-approve
+        db.update_subscriber_status(id, SubscriberStatus::Declined)?;
+        db.update_subscriber_status(id, SubscriberStatus::Approved)?;
+        let s2 = db
+            .get_subscriber_by_email("reapprove@example.com")?
+            .unwrap();
+        let second_approved = s2.approved_at.unwrap();
+
+        assert!(
+            second_approved > first_approved,
+            "Re-approval should update approved_at to a newer timestamp"
+        );
+        assert!(s2.declined_at.is_none());
 
         Ok(())
     }
