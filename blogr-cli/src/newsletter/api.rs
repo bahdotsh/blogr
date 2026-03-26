@@ -8,18 +8,21 @@ use axum::{
     extract::{Path, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
-    response::{Html, Json, Response},
+    response::{Html, IntoResponse, Json, Response},
     routing::{delete, get, post, put},
     Router,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 
 use super::database::BounceRecord;
+use super::is_valid_tag;
 use super::webhooks::BounceWebhookPayload;
 use super::{NewsletterManager, Subscriber, SubscriberStatus};
 use crate::config::Config;
@@ -34,6 +37,9 @@ pub struct ApiConfig {
     pub api_key: Option<String>,
     pub cors_enabled: bool,
     pub rate_limit: Option<u32>,
+    /// When true, use `X-Forwarded-For` header to determine client IP for
+    /// rate limiting. Enable this when running behind a reverse proxy.
+    pub trust_proxy: bool,
 }
 
 impl Default for ApiConfig {
@@ -44,6 +50,7 @@ impl Default for ApiConfig {
             api_key: None,
             cors_enabled: true,
             rate_limit: Some(100),
+            trust_proxy: false,
         }
     }
 }
@@ -53,6 +60,109 @@ const MAX_CONFIRMATION_TASKS: usize = 10;
 
 /// Maximum page size for list/export endpoints to prevent OOM on large databases.
 const MAX_PAGE_SIZE: usize = 1000;
+
+/// Per-IP sliding-window rate limiter.
+/// Tracks request timestamps per client IP within a 60-second window
+/// and rejects requests that exceed the configured limit.
+#[derive(Clone)]
+struct RateLimiter {
+    buckets: Arc<Mutex<HashMap<IpAddr, VecDeque<std::time::Instant>>>>,
+    max_requests: u32,
+}
+
+impl RateLimiter {
+    fn new(max_requests_per_minute: u32) -> Self {
+        Self {
+            buckets: Arc::new(Mutex::new(HashMap::new())),
+            max_requests: max_requests_per_minute,
+        }
+    }
+
+    async fn check(&self, ip: IpAddr) -> bool {
+        let mut buckets = self.buckets.lock().await;
+        let now = std::time::Instant::now();
+        let window = std::time::Duration::from_secs(60);
+
+        let timestamps = buckets.entry(ip).or_default();
+
+        // Remove timestamps outside the window
+        while timestamps
+            .front()
+            .is_some_and(|t| now.duration_since(*t) > window)
+        {
+            timestamps.pop_front();
+        }
+
+        if timestamps.len() >= self.max_requests as usize {
+            return false;
+        }
+
+        timestamps.push_back(now);
+        true
+    }
+
+    /// Remove entries for IPs with no recent requests to prevent unbounded growth.
+    async fn cleanup_stale_entries(&self) {
+        let mut buckets = self.buckets.lock().await;
+        let now = std::time::Instant::now();
+        let window = std::time::Duration::from_secs(60);
+        buckets.retain(|_, timestamps| {
+            timestamps
+                .back()
+                .is_some_and(|t| now.duration_since(*t) <= window)
+        });
+    }
+}
+
+/// Extract client IP from the request, optionally trusting proxy headers.
+fn extract_client_ip(req: &Request, trust_proxy: bool) -> IpAddr {
+    if trust_proxy {
+        // Try X-Forwarded-For first (leftmost IP is the original client),
+        // then fall back to X-Real-IP.
+        if let Some(forwarded_for) = req.headers().get("x-forwarded-for") {
+            if let Ok(value) = forwarded_for.to_str() {
+                if let Some(first_ip) = value.split(',').next() {
+                    if let Ok(ip) = first_ip.trim().parse::<IpAddr>() {
+                        return ip;
+                    }
+                }
+            }
+        }
+        if let Some(real_ip) = req.headers().get("x-real-ip") {
+            if let Ok(value) = real_ip.to_str() {
+                if let Ok(ip) = value.trim().parse::<IpAddr>() {
+                    return ip;
+                }
+            }
+        }
+    }
+
+    req.extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip())
+        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+}
+
+/// Rate limiting middleware
+async fn rate_limit_middleware(
+    req: Request,
+    next: Next,
+    limiter: Arc<RateLimiter>,
+    trust_proxy: bool,
+) -> Response {
+    let ip = extract_client_ip(&req, trust_proxy);
+
+    if !limiter.check(ip).await {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ApiResponse::<()>::error(
+                "Rate limit exceeded. Try again later.".to_string(),
+            )),
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
 
 /// API server application state
 #[derive(Clone)]
@@ -189,6 +299,30 @@ impl NewsletterApiServer {
             "{}:{}",
             self.state.api_config.host, self.state.api_config.port
         );
+
+        // Spawn periodic database cleanup (every 6 hours)
+        let db_manager = Arc::clone(&self.state.newsletter_manager);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+            interval.tick().await; // skip the immediate first tick
+            loop {
+                interval.tick().await;
+                let db = db_manager.database();
+                if let Err(e) = db.cleanup_expired_tokens() {
+                    eprintln!("Warning: periodic cleanup of expired tokens failed: {}", e);
+                }
+                if let Err(e) = db.cleanup_completed_send_queue() {
+                    eprintln!("Warning: periodic cleanup of send queue failed: {}", e);
+                }
+                if let Err(e) = db.cleanup_old_send_recipients(90) {
+                    eprintln!(
+                        "Warning: periodic cleanup of old send recipients failed: {}",
+                        e
+                    );
+                }
+            }
+        });
+
         let app = self.create_router();
 
         println!("Starting Newsletter API server on {}", addr);
@@ -197,9 +331,12 @@ impl NewsletterApiServer {
             .await
             .with_context(|| format!("Failed to bind to address {}", addr))?;
 
-        axum::serve(listener, app)
-            .await
-            .context("API server error")?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .context("API server error")?;
 
         Ok(())
     }
@@ -208,6 +345,8 @@ impl NewsletterApiServer {
     fn create_router(self) -> Router {
         let api_key = self.state.api_config.api_key.clone();
         let cors_enabled = self.state.api_config.cors_enabled;
+        let rate_limit = self.state.api_config.rate_limit;
+        let trust_proxy = self.state.api_config.trust_proxy;
 
         // Build CORS layer before self.state is moved — restrict to configured
         // api_base_url origin if available, otherwise permissive for local dev.
@@ -219,6 +358,13 @@ impl NewsletterApiServer {
                         .allow_methods(Any)
                         .allow_headers(Any)
                 } else {
+                    eprintln!(
+                        "WARNING: api_base_url {:?} is not a valid CORS origin. \
+                         Falling back to permissive CORS (allow all origins). \
+                         Set api_base_url to a valid origin (e.g., \"https://example.com\") \
+                         to restrict CORS.",
+                        base_url
+                    );
                     CorsLayer::new()
                         .allow_origin(Any)
                         .allow_methods(Any)
@@ -272,6 +418,27 @@ impl NewsletterApiServer {
         }
 
         let mut app = public_routes.merge(protected_routes).with_state(self.state);
+
+        // Apply rate limiting if configured
+        if let Some(limit) = rate_limit {
+            if limit > 0 {
+                let limiter = Arc::new(RateLimiter::new(limit));
+                // Periodically evict stale per-IP entries (every 5 minutes)
+                let cleanup_limiter = Arc::clone(&limiter);
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+                    interval.tick().await; // skip the immediate first tick
+                    loop {
+                        interval.tick().await;
+                        cleanup_limiter.cleanup_stale_entries().await;
+                    }
+                });
+                app = app.layer(middleware::from_fn(move |req, next| {
+                    let limiter = Arc::clone(&limiter);
+                    rate_limit_middleware(req, next, limiter, trust_proxy)
+                }));
+            }
+        }
 
         if let Some(cors) = cors_layer {
             app = app.layer(cors);
@@ -648,69 +815,53 @@ async fn update_subscriber(
     Path(email): Path<String>,
     Json(request): Json<UpdateSubscriberRequest>,
 ) -> Result<Json<ApiResponse<Subscriber>>, (StatusCode, Json<ApiResponse<()>>)> {
-    let mut subscriber = match state
-        .newsletter_manager
-        .database()
-        .get_subscriber_by_email(&email)
-    {
-        Ok(Some(subscriber)) => subscriber,
-        Ok(None) => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(ApiResponse::error("Subscriber not found".to_string())),
-            ))
-        }
-        Err(e) => {
-            eprintln!("Failed to get subscriber: {}", e);
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error("Internal database error".to_string())),
-            ));
-        }
+    let db = state.newsletter_manager.database();
+
+    let db_err = |msg: &str, e: anyhow::Error| -> (StatusCode, Json<ApiResponse<()>>) {
+        eprintln!("{}: {}", msg, e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(msg.to_string())),
+        )
+    };
+    let not_found = || -> (StatusCode, Json<ApiResponse<()>>) {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse::error("Subscriber not found".to_string())),
+        )
     };
 
+    // Verify subscriber exists
+    db.get_subscriber_by_email(&email)
+        .map_err(|e| db_err("Internal database error", e))?
+        .ok_or_else(not_found)?;
+
+    // Delegate status transitions to the canonical DB method (single source of truth
+    // for clearing stale timestamps on approve/decline/reset).
     if let Some(status) = request.status {
-        match status {
-            SubscriberStatus::Approved => {
-                subscriber.status = SubscriberStatus::Approved;
-                if subscriber.approved_at.is_none() {
-                    subscriber.approved_at = Some(chrono::Utc::now());
-                }
-            }
-            SubscriberStatus::Declined => {
-                subscriber.status = SubscriberStatus::Declined;
-                if subscriber.declined_at.is_none() {
-                    subscriber.declined_at = Some(chrono::Utc::now());
-                }
-            }
-            SubscriberStatus::Pending | SubscriberStatus::Unconfirmed => {
-                subscriber.status = status;
-                subscriber.approved_at = None;
-                subscriber.declined_at = None;
-            }
-        }
+        db.update_subscriber_status_by_email(&email, status)
+            .map_err(|e| db_err("Failed to update subscriber", e))?;
     }
 
+    // Update notes if provided — re-fetch to pick up correct timestamps from status
+    // transition above, then write the full record.
     if let Some(notes) = request.notes {
+        let mut subscriber = db
+            .get_subscriber_by_email(&email)
+            .map_err(|e| db_err("Internal database error", e))?
+            .ok_or_else(not_found)?;
         subscriber.notes = Some(notes);
+        db.update_subscriber(&subscriber)
+            .map_err(|e| db_err("Failed to update subscriber", e))?;
+        return Ok(Json(ApiResponse::success(subscriber)));
     }
 
-    match state
-        .newsletter_manager
-        .database()
-        .update_subscriber(&subscriber)
-    {
-        Ok(_) => Ok(Json(ApiResponse::success(subscriber))),
-        Err(e) => {
-            eprintln!("Failed to update subscriber: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(
-                    "Failed to update subscriber".to_string(),
-                )),
-            ))
-        }
-    }
+    // No notes update — fetch and return current state
+    let subscriber = db
+        .get_subscriber_by_email(&email)
+        .map_err(|e| db_err("Internal database error", e))?
+        .ok_or_else(not_found)?;
+    Ok(Json(ApiResponse::success(subscriber)))
 }
 
 /// Delete subscriber endpoint
@@ -740,12 +891,69 @@ async fn delete_subscriber(
     }
 }
 
-/// Export subscribers endpoint
+/// Export response with pagination metadata
+#[derive(Serialize)]
+pub struct ExportResponse {
+    pub subscribers: Vec<Subscriber>,
+    pub total: i64,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
+}
+
+/// Export subscribers endpoint with pagination metadata
 async fn export_subscribers(
     State(state): State<ApiState>,
     Query(params): Query<SubscriberQuery>,
-) -> Result<Json<ApiResponse<Vec<Subscriber>>>, (StatusCode, Json<ApiResponse<()>>)> {
-    list_subscribers(State(state), Query(params)).await
+) -> Result<Json<ApiResponse<ExportResponse>>, (StatusCode, Json<ApiResponse<()>>)> {
+    let db = state.newsletter_manager.database();
+    let limit = params.limit.unwrap_or(MAX_PAGE_SIZE).min(MAX_PAGE_SIZE);
+    let offset = params.offset.unwrap_or(0);
+
+    let status_filter = params
+        .status
+        .as_deref()
+        .and_then(|s| match s.to_lowercase().as_str() {
+            "pending" => Some(SubscriberStatus::Pending),
+            "approved" => Some(SubscriberStatus::Approved),
+            "declined" => Some(SubscriberStatus::Declined),
+            "unconfirmed" => Some(SubscriberStatus::Unconfirmed),
+            _ => None,
+        });
+
+    let total = db
+        .get_subscriber_count(status_filter.clone())
+        .map_err(|e| {
+            eprintln!("Failed to get subscriber count: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(
+                    "Failed to export subscribers".to_string(),
+                )),
+            )
+        })?;
+
+    let subscribers = db
+        .get_subscribers_paginated(status_filter, Some(limit), Some(offset))
+        .map_err(|e| {
+            eprintln!("Failed to export subscribers: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(
+                    "Failed to export subscribers".to_string(),
+                )),
+            )
+        })?;
+
+    let response = ExportResponse {
+        has_more: (offset + subscribers.len()) < total as usize,
+        subscribers,
+        total,
+        limit,
+        offset,
+    };
+
+    Ok(Json(ApiResponse::success(response)))
 }
 
 /// Get statistics endpoint
@@ -791,6 +999,30 @@ async fn update_subscriber_tags(
     Path(email): Path<String>,
     Json(request): Json<UpdateTagsRequest>,
 ) -> Result<Json<ApiResponse<Vec<String>>>, (StatusCode, Json<ApiResponse<()>>)> {
+    // Validate all tags before querying the database
+    for tag in &request.tags {
+        if !is_valid_tag(tag) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::error(format!(
+                    "Invalid tag {:?}: must be non-empty, at most {} chars, no control characters",
+                    tag,
+                    super::MAX_TAG_LENGTH,
+                ))),
+            ));
+        }
+    }
+    if request.tags.len() > super::MAX_TAGS_PER_SUBSCRIBER {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::error(format!(
+                "Too many tags: {} provided (max {})",
+                request.tags.len(),
+                super::MAX_TAGS_PER_SUBSCRIBER,
+            ))),
+        ));
+    }
+
     let subscriber = match state
         .newsletter_manager
         .database()
@@ -1083,6 +1315,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_update_subscriber_status_and_notes_together() {
+        let (state, _dir) = create_test_state().await;
+
+        // Create a subscriber
+        let create_req = CreateSubscriberRequest {
+            email: "both@example.com".to_string(),
+            status: None,
+            notes: None,
+        };
+        let _ = create_subscriber(State(state.clone()), Json(create_req))
+            .await
+            .unwrap();
+
+        // First decline it
+        let decline_req = UpdateSubscriberRequest {
+            status: Some(SubscriberStatus::Declined),
+            notes: None,
+        };
+        let _ = update_subscriber(
+            State(state.clone()),
+            Path("both@example.com".to_string()),
+            Json(decline_req),
+        )
+        .await
+        .unwrap();
+
+        // Now approve AND set notes in a single request
+        let update_req = UpdateSubscriberRequest {
+            status: Some(SubscriberStatus::Approved),
+            notes: Some("approved with notes".to_string()),
+        };
+        let result = update_subscriber(
+            State(state.clone()),
+            Path("both@example.com".to_string()),
+            Json(update_req),
+        )
+        .await;
+        assert!(result.is_ok());
+
+        let sub = result.unwrap().0.data.unwrap();
+        assert_eq!(sub.status, SubscriberStatus::Approved);
+        assert!(sub.approved_at.is_some());
+        assert!(
+            sub.declined_at.is_none(),
+            "declined_at should be cleared after approving"
+        );
+        assert_eq!(sub.notes, Some("approved with notes".to_string()));
+    }
+
+    #[tokio::test]
     async fn test_stats_endpoint() {
         let (state, _dir) = create_test_state().await;
 
@@ -1090,5 +1372,280 @@ mod tests {
         assert!(result.is_ok());
         let stats = result.unwrap().0.data.unwrap();
         assert_eq!(stats.total_subscribers, 0);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_allows_within_limit() {
+        let limiter = RateLimiter::new(5);
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+
+        for _ in 0..5 {
+            assert!(
+                limiter.check(ip).await,
+                "should allow requests within limit"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_rejects_over_limit() {
+        let limiter = RateLimiter::new(3);
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+
+        assert!(limiter.check(ip).await);
+        assert!(limiter.check(ip).await);
+        assert!(limiter.check(ip).await);
+        assert!(!limiter.check(ip).await, "should reject the 4th request");
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_isolates_ips() {
+        let limiter = RateLimiter::new(2);
+        let ip1: IpAddr = "10.0.0.1".parse().unwrap();
+        let ip2: IpAddr = "10.0.0.2".parse().unwrap();
+
+        // Exhaust limit for ip1
+        assert!(limiter.check(ip1).await);
+        assert!(limiter.check(ip1).await);
+        assert!(!limiter.check(ip1).await);
+
+        // ip2 should still be allowed
+        assert!(
+            limiter.check(ip2).await,
+            "different IP should have its own bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_cleanup_stale_entries() {
+        let limiter = RateLimiter::new(100);
+        let ip: IpAddr = "192.168.1.1".parse().unwrap();
+
+        // Add a request so the IP has an entry
+        assert!(limiter.check(ip).await);
+        {
+            let buckets = limiter.buckets.lock().await;
+            assert!(buckets.contains_key(&ip));
+        }
+
+        // Manually expire the entry by clearing timestamps
+        {
+            let mut buckets = limiter.buckets.lock().await;
+            buckets.get_mut(&ip).unwrap().clear();
+        }
+
+        limiter.cleanup_stale_entries().await;
+
+        let buckets = limiter.buckets.lock().await;
+        assert!(
+            !buckets.contains_key(&ip),
+            "stale IP entry should be cleaned up"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_middleware_per_ip() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let limiter = Arc::new(RateLimiter::new(2));
+        let limiter_clone = Arc::clone(&limiter);
+
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let limiter = Arc::clone(&limiter_clone);
+                rate_limit_middleware(req, next, limiter, false)
+            }));
+
+        let addr1: SocketAddr = "10.0.0.1:1234".parse().unwrap();
+        let addr2: SocketAddr = "10.0.0.2:1234".parse().unwrap();
+
+        // 2 requests from IP1 should succeed
+        for _ in 0..2 {
+            let req = Request::builder()
+                .uri("/test")
+                .extension(axum::extract::ConnectInfo(addr1))
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        // 3rd request from IP1 should be rate limited
+        let req = Request::builder()
+            .uri("/test")
+            .extension(axum::extract::ConnectInfo(addr1))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "3rd request from same IP should be rejected"
+        );
+
+        // Request from IP2 should still succeed (per-IP isolation)
+        let req = Request::builder()
+            .uri("/test")
+            .extension(axum::extract::ConnectInfo(addr2))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "different IP should have its own bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_middleware_fallback_without_connect_info() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let limiter = Arc::new(RateLimiter::new(1));
+        let limiter_clone = Arc::clone(&limiter);
+
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let limiter = Arc::clone(&limiter_clone);
+                rate_limit_middleware(req, next, limiter, false)
+            }));
+
+        // Request without ConnectInfo falls back to 0.0.0.0
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Second request without ConnectInfo shares the same fallback bucket
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "requests without ConnectInfo share a single fallback bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_middleware_x_forwarded_for() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let limiter = Arc::new(RateLimiter::new(1));
+        let limiter_clone = Arc::clone(&limiter);
+
+        // trust_proxy = true
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let limiter = Arc::clone(&limiter_clone);
+                rate_limit_middleware(req, next, limiter, true)
+            }));
+
+        // First request from "client" 10.0.0.1 via proxy should succeed
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "10.0.0.1, 192.168.1.1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Second request from same forwarded IP should be rate limited
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "10.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "same X-Forwarded-For IP should share the same bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_middleware_x_real_ip() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let limiter = Arc::new(RateLimiter::new(1));
+        let limiter_clone = Arc::clone(&limiter);
+
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let limiter = Arc::clone(&limiter_clone);
+                rate_limit_middleware(req, next, limiter, true)
+            }));
+
+        // X-Real-IP should be used when X-Forwarded-For is absent
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-real-ip", "172.16.0.1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-real-ip", "172.16.0.1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "same X-Real-IP should share the same bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_ignores_proxy_headers_when_untrusted() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let limiter = Arc::new(RateLimiter::new(1));
+        let limiter_clone = Arc::clone(&limiter);
+
+        // trust_proxy = false
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let limiter = Arc::clone(&limiter_clone);
+                rate_limit_middleware(req, next, limiter, false)
+            }));
+
+        // Even with different X-Forwarded-For IPs, both fall back to 0.0.0.0
+        // (no ConnectInfo in test), so second request should be rate limited
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "10.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "10.0.0.2")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "proxy headers should be ignored when trust_proxy is false"
+        );
     }
 }

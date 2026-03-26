@@ -29,7 +29,25 @@ impl NewsletterManager {
         let database =
             NewsletterDatabase::open(&db_path).context("Failed to open newsletter database")?;
 
+        // Run startup cleanup to prevent unbounded database growth
+        Self::run_startup_cleanup(&database);
+
         Ok(Self { config, database })
+    }
+
+    /// Run cleanup tasks on startup: expired confirmation tokens,
+    /// completed send queues, and old send history.
+    fn run_startup_cleanup(database: &NewsletterDatabase) {
+        if let Err(e) = database.cleanup_expired_tokens() {
+            eprintln!("Warning: failed to clean up expired tokens: {}", e);
+        }
+        if let Err(e) = database.cleanup_completed_send_queue() {
+            eprintln!("Warning: failed to clean up completed send queue: {}", e);
+        }
+        // Clean up send recipient records older than 90 days
+        if let Err(e) = database.cleanup_old_send_recipients(90) {
+            eprintln!("Warning: failed to clean up old send recipients: {}", e);
+        }
     }
 
     /// Check if newsletter functionality is enabled
