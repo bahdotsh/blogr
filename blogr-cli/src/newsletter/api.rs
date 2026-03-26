@@ -297,9 +297,12 @@ impl NewsletterApiServer {
             .await
             .with_context(|| format!("Failed to bind to address {}", addr))?;
 
-        axum::serve(listener, app)
-            .await
-            .context("API server error")?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .context("API server error")?;
 
         Ok(())
     }
@@ -769,67 +772,53 @@ async fn update_subscriber(
     Path(email): Path<String>,
     Json(request): Json<UpdateSubscriberRequest>,
 ) -> Result<Json<ApiResponse<Subscriber>>, (StatusCode, Json<ApiResponse<()>>)> {
-    let mut subscriber = match state
-        .newsletter_manager
-        .database()
-        .get_subscriber_by_email(&email)
-    {
-        Ok(Some(subscriber)) => subscriber,
-        Ok(None) => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(ApiResponse::error("Subscriber not found".to_string())),
-            ))
-        }
-        Err(e) => {
-            eprintln!("Failed to get subscriber: {}", e);
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error("Internal database error".to_string())),
-            ));
-        }
+    let db = state.newsletter_manager.database();
+
+    let db_err = |msg: &str, e: anyhow::Error| -> (StatusCode, Json<ApiResponse<()>>) {
+        eprintln!("{}: {}", msg, e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(msg.to_string())),
+        )
+    };
+    let not_found = || -> (StatusCode, Json<ApiResponse<()>>) {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse::error("Subscriber not found".to_string())),
+        )
     };
 
+    // Verify subscriber exists
+    db.get_subscriber_by_email(&email)
+        .map_err(|e| db_err("Internal database error", e))?
+        .ok_or_else(not_found)?;
+
+    // Delegate status transitions to the canonical DB method (single source of truth
+    // for clearing stale timestamps on approve/decline/reset).
     if let Some(status) = request.status {
-        match status {
-            SubscriberStatus::Approved => {
-                subscriber.status = SubscriberStatus::Approved;
-                subscriber.approved_at = Some(chrono::Utc::now());
-                subscriber.declined_at = None;
-            }
-            SubscriberStatus::Declined => {
-                subscriber.status = SubscriberStatus::Declined;
-                subscriber.declined_at = Some(chrono::Utc::now());
-                subscriber.approved_at = None;
-            }
-            SubscriberStatus::Pending | SubscriberStatus::Unconfirmed => {
-                subscriber.status = status;
-                subscriber.approved_at = None;
-                subscriber.declined_at = None;
-            }
-        }
+        db.update_subscriber_status_by_email(&email, status)
+            .map_err(|e| db_err("Failed to update subscriber", e))?;
     }
 
+    // Update notes if provided — re-fetch to pick up correct timestamps from status
+    // transition above, then write the full record.
     if let Some(notes) = request.notes {
+        let mut subscriber = db
+            .get_subscriber_by_email(&email)
+            .map_err(|e| db_err("Internal database error", e))?
+            .ok_or_else(not_found)?;
         subscriber.notes = Some(notes);
+        db.update_subscriber(&subscriber)
+            .map_err(|e| db_err("Failed to update subscriber", e))?;
+        return Ok(Json(ApiResponse::success(subscriber)));
     }
 
-    match state
-        .newsletter_manager
-        .database()
-        .update_subscriber(&subscriber)
-    {
-        Ok(_) => Ok(Json(ApiResponse::success(subscriber))),
-        Err(e) => {
-            eprintln!("Failed to update subscriber: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(
-                    "Failed to update subscriber".to_string(),
-                )),
-            ))
-        }
-    }
+    // No notes update — fetch and return current state
+    let subscriber = db
+        .get_subscriber_by_email(&email)
+        .map_err(|e| db_err("Internal database error", e))?
+        .ok_or_else(not_found)?;
+    Ok(Json(ApiResponse::success(subscriber)))
 }
 
 /// Delete subscriber endpoint
@@ -1301,6 +1290,100 @@ mod tests {
         assert!(
             !buckets.contains_key(&ip),
             "stale IP entry should be cleaned up"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_middleware_per_ip() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let limiter = Arc::new(RateLimiter::new(2));
+        let limiter_clone = Arc::clone(&limiter);
+
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let limiter = Arc::clone(&limiter_clone);
+                rate_limit_middleware(req, next, limiter)
+            }));
+
+        let addr1: SocketAddr = "10.0.0.1:1234".parse().unwrap();
+        let addr2: SocketAddr = "10.0.0.2:1234".parse().unwrap();
+
+        // 2 requests from IP1 should succeed
+        for _ in 0..2 {
+            let req = Request::builder()
+                .uri("/test")
+                .extension(axum::extract::ConnectInfo(addr1))
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        // 3rd request from IP1 should be rate limited
+        let req = Request::builder()
+            .uri("/test")
+            .extension(axum::extract::ConnectInfo(addr1))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "3rd request from same IP should be rejected"
+        );
+
+        // Request from IP2 should still succeed (per-IP isolation)
+        let req = Request::builder()
+            .uri("/test")
+            .extension(axum::extract::ConnectInfo(addr2))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "different IP should have its own bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_middleware_fallback_without_connect_info() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let limiter = Arc::new(RateLimiter::new(1));
+        let limiter_clone = Arc::clone(&limiter);
+
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let limiter = Arc::clone(&limiter_clone);
+                rate_limit_middleware(req, next, limiter)
+            }));
+
+        // Request without ConnectInfo falls back to 0.0.0.0
+        let req = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Second request without ConnectInfo shares the same fallback bucket
+        let req = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "requests without ConnectInfo share a single fallback bucket"
         );
     }
 }
