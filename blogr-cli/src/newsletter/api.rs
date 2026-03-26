@@ -37,6 +37,9 @@ pub struct ApiConfig {
     pub api_key: Option<String>,
     pub cors_enabled: bool,
     pub rate_limit: Option<u32>,
+    /// When true, use `X-Forwarded-For` header to determine client IP for
+    /// rate limiting. Enable this when running behind a reverse proxy.
+    pub trust_proxy: bool,
 }
 
 impl Default for ApiConfig {
@@ -47,6 +50,7 @@ impl Default for ApiConfig {
             api_key: None,
             cors_enabled: true,
             rate_limit: Some(100),
+            trust_proxy: false,
         }
     }
 }
@@ -110,13 +114,43 @@ impl RateLimiter {
     }
 }
 
-/// Rate limiting middleware
-async fn rate_limit_middleware(req: Request, next: Next, limiter: Arc<RateLimiter>) -> Response {
-    let ip = req
-        .extensions()
+/// Extract client IP from the request, optionally trusting proxy headers.
+fn extract_client_ip(req: &Request, trust_proxy: bool) -> IpAddr {
+    if trust_proxy {
+        // Try X-Forwarded-For first (leftmost IP is the original client),
+        // then fall back to X-Real-IP.
+        if let Some(forwarded_for) = req.headers().get("x-forwarded-for") {
+            if let Ok(value) = forwarded_for.to_str() {
+                if let Some(first_ip) = value.split(',').next() {
+                    if let Ok(ip) = first_ip.trim().parse::<IpAddr>() {
+                        return ip;
+                    }
+                }
+            }
+        }
+        if let Some(real_ip) = req.headers().get("x-real-ip") {
+            if let Ok(value) = real_ip.to_str() {
+                if let Ok(ip) = value.trim().parse::<IpAddr>() {
+                    return ip;
+                }
+            }
+        }
+    }
+
+    req.extensions()
         .get::<axum::extract::ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip())
-        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+}
+
+/// Rate limiting middleware
+async fn rate_limit_middleware(
+    req: Request,
+    next: Next,
+    limiter: Arc<RateLimiter>,
+    trust_proxy: bool,
+) -> Response {
+    let ip = extract_client_ip(&req, trust_proxy);
 
     if !limiter.check(ip).await {
         return (
@@ -312,6 +346,7 @@ impl NewsletterApiServer {
         let api_key = self.state.api_config.api_key.clone();
         let cors_enabled = self.state.api_config.cors_enabled;
         let rate_limit = self.state.api_config.rate_limit;
+        let trust_proxy = self.state.api_config.trust_proxy;
 
         // Build CORS layer before self.state is moved — restrict to configured
         // api_base_url origin if available, otherwise permissive for local dev.
@@ -385,6 +420,7 @@ impl NewsletterApiServer {
                 let cleanup_limiter = Arc::clone(&limiter);
                 tokio::spawn(async move {
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+                    interval.tick().await; // skip the immediate first tick
                     loop {
                         interval.tick().await;
                         cleanup_limiter.cleanup_stale_entries().await;
@@ -392,7 +428,7 @@ impl NewsletterApiServer {
                 });
                 app = app.layer(middleware::from_fn(move |req, next| {
                     let limiter = Arc::clone(&limiter);
-                    rate_limit_middleware(req, next, limiter)
+                    rate_limit_middleware(req, next, limiter, trust_proxy)
                 }));
             }
         }
@@ -1215,6 +1251,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_update_subscriber_status_and_notes_together() {
+        let (state, _dir) = create_test_state().await;
+
+        // Create a subscriber
+        let create_req = CreateSubscriberRequest {
+            email: "both@example.com".to_string(),
+            status: None,
+            notes: None,
+        };
+        let _ = create_subscriber(State(state.clone()), Json(create_req))
+            .await
+            .unwrap();
+
+        // First decline it
+        let decline_req = UpdateSubscriberRequest {
+            status: Some(SubscriberStatus::Declined),
+            notes: None,
+        };
+        let _ = update_subscriber(
+            State(state.clone()),
+            Path("both@example.com".to_string()),
+            Json(decline_req),
+        )
+        .await
+        .unwrap();
+
+        // Now approve AND set notes in a single request
+        let update_req = UpdateSubscriberRequest {
+            status: Some(SubscriberStatus::Approved),
+            notes: Some("approved with notes".to_string()),
+        };
+        let result = update_subscriber(
+            State(state.clone()),
+            Path("both@example.com".to_string()),
+            Json(update_req),
+        )
+        .await;
+        assert!(result.is_ok());
+
+        let sub = result.unwrap().0.data.unwrap();
+        assert_eq!(sub.status, SubscriberStatus::Approved);
+        assert!(sub.approved_at.is_some());
+        assert!(
+            sub.declined_at.is_none(),
+            "declined_at should be cleared after approving"
+        );
+        assert_eq!(sub.notes, Some("approved with notes".to_string()));
+    }
+
+    #[tokio::test]
     async fn test_stats_endpoint() {
         let (state, _dir) = create_test_state().await;
 
@@ -1306,7 +1392,7 @@ mod tests {
             .route("/test", get(|| async { "ok" }))
             .layer(middleware::from_fn(move |req, next| {
                 let limiter = Arc::clone(&limiter_clone);
-                rate_limit_middleware(req, next, limiter)
+                rate_limit_middleware(req, next, limiter, false)
             }));
 
         let addr1: SocketAddr = "10.0.0.1:1234".parse().unwrap();
@@ -1363,7 +1449,7 @@ mod tests {
             .route("/test", get(|| async { "ok" }))
             .layer(middleware::from_fn(move |req, next| {
                 let limiter = Arc::clone(&limiter_clone);
-                rate_limit_middleware(req, next, limiter)
+                rate_limit_middleware(req, next, limiter, false)
             }));
 
         // Request without ConnectInfo falls back to 0.0.0.0
@@ -1384,6 +1470,124 @@ mod tests {
             resp.status(),
             StatusCode::TOO_MANY_REQUESTS,
             "requests without ConnectInfo share a single fallback bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_middleware_x_forwarded_for() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let limiter = Arc::new(RateLimiter::new(1));
+        let limiter_clone = Arc::clone(&limiter);
+
+        // trust_proxy = true
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let limiter = Arc::clone(&limiter_clone);
+                rate_limit_middleware(req, next, limiter, true)
+            }));
+
+        // First request from "client" 10.0.0.1 via proxy should succeed
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "10.0.0.1, 192.168.1.1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Second request from same forwarded IP should be rate limited
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "10.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "same X-Forwarded-For IP should share the same bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_middleware_x_real_ip() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let limiter = Arc::new(RateLimiter::new(1));
+        let limiter_clone = Arc::clone(&limiter);
+
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let limiter = Arc::clone(&limiter_clone);
+                rate_limit_middleware(req, next, limiter, true)
+            }));
+
+        // X-Real-IP should be used when X-Forwarded-For is absent
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-real-ip", "172.16.0.1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-real-ip", "172.16.0.1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "same X-Real-IP should share the same bucket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_ignores_proxy_headers_when_untrusted() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let limiter = Arc::new(RateLimiter::new(1));
+        let limiter_clone = Arc::clone(&limiter);
+
+        // trust_proxy = false
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let limiter = Arc::clone(&limiter_clone);
+                rate_limit_middleware(req, next, limiter, false)
+            }));
+
+        // Even with different X-Forwarded-For IPs, both fall back to 0.0.0.0
+        // (no ConnectInfo in test), so second request should be rate limited
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "10.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "10.0.0.2")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "proxy headers should be ignored when trust_proxy is false"
         );
     }
 }

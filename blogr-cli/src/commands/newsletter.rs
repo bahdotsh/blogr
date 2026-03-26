@@ -1188,6 +1188,7 @@ pub async fn handle_api_server(
         api_key: api_key.map(|s| s.to_string()),
         cors_enabled,
         rate_limit: Some(100), // 100 requests per minute
+        trust_proxy: false,
     };
 
     // Create and start the API server
