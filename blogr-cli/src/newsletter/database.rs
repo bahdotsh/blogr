@@ -528,7 +528,9 @@ impl NewsletterDatabase {
         Ok(())
     }
 
-    /// Update subscriber status by email
+    /// Update subscriber status by email.
+    /// Maintains clean state transitions: approving clears declined_at,
+    /// declining clears approved_at, and resetting clears both.
     pub fn update_subscriber_status_by_email(
         &self,
         email: &str,
@@ -539,11 +541,11 @@ impl NewsletterDatabase {
         let conn = self.get_conn()?;
         let rows = match status {
             SubscriberStatus::Approved => conn.execute(
-                "UPDATE subscribers SET status = ?1, approved_at = ?2 WHERE email = ?3",
+                "UPDATE subscribers SET status = ?1, approved_at = ?2, declined_at = NULL WHERE email = ?3",
                 params![status.to_string(), now, email],
             )?,
             SubscriberStatus::Declined => conn.execute(
-                "UPDATE subscribers SET status = ?1, declined_at = ?2 WHERE email = ?3",
+                "UPDATE subscribers SET status = ?1, declined_at = ?2, approved_at = NULL WHERE email = ?3",
                 params![status.to_string(), now, email],
             )?,
             SubscriberStatus::Pending | SubscriberStatus::Unconfirmed => conn.execute(
@@ -1092,8 +1094,23 @@ impl NewsletterDatabase {
 
     // --- Tag operations ---
 
-    /// Add a tag to a subscriber
+    /// Add a tag to a subscriber.
+    /// Validates tag format and length before insertion.
     pub fn add_tag(&self, subscriber_id: i64, tag: &str) -> Result<()> {
+        if !super::is_valid_tag(tag) {
+            anyhow::bail!(
+                "Invalid tag: must be non-empty, at most {} chars, no control characters, no leading/trailing whitespace",
+                super::MAX_TAG_LENGTH,
+            );
+        }
+        let tag_count = self.get_tags(subscriber_id)?.len();
+        if tag_count >= super::MAX_TAGS_PER_SUBSCRIBER {
+            anyhow::bail!(
+                "Tag limit reached: subscriber already has {} tags (max {})",
+                tag_count,
+                super::MAX_TAGS_PER_SUBSCRIBER,
+            );
+        }
         let conn = self.get_conn()?;
         conn.execute(
             "INSERT OR IGNORE INTO subscriber_tags (subscriber_id, tag) VALUES (?1, ?2)",
@@ -1187,7 +1204,25 @@ impl NewsletterDatabase {
     }
 
     /// Replace all tags for a subscriber atomically (remove old, add new).
+    /// Validates all tags before applying changes.
     pub fn set_tags(&self, subscriber_id: i64, tags: &[String]) -> Result<()> {
+        if tags.len() > super::MAX_TAGS_PER_SUBSCRIBER {
+            anyhow::bail!(
+                "Too many tags: {} provided (max {})",
+                tags.len(),
+                super::MAX_TAGS_PER_SUBSCRIBER,
+            );
+        }
+        for tag in tags {
+            if !super::is_valid_tag(tag) {
+                anyhow::bail!(
+                    "Invalid tag {:?}: must be non-empty, at most {} chars, no control characters",
+                    tag,
+                    super::MAX_TAG_LENGTH,
+                );
+            }
+        }
+
         let conn = self.get_conn()?;
         let tx = conn.unchecked_transaction()?;
 
@@ -1888,6 +1923,121 @@ mod tests {
 
         let all = db.get_subscribers_by_tag("paginated")?;
         assert_eq!(all.len(), 10);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_status_transition_approve_clears_declined() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        let sub = Subscriber::new("transition@example.com".to_string(), None);
+        db.add_subscriber(&sub)?;
+
+        // First decline
+        db.update_subscriber_status_by_email("transition@example.com", SubscriberStatus::Declined)?;
+        let s = db
+            .get_subscriber_by_email("transition@example.com")?
+            .unwrap();
+        assert_eq!(s.status, SubscriberStatus::Declined);
+        assert!(s.declined_at.is_some());
+
+        // Now approve — declined_at should be cleared
+        db.update_subscriber_status_by_email("transition@example.com", SubscriberStatus::Approved)?;
+        let s = db
+            .get_subscriber_by_email("transition@example.com")?
+            .unwrap();
+        assert_eq!(s.status, SubscriberStatus::Approved);
+        assert!(s.approved_at.is_some());
+        assert!(
+            s.declined_at.is_none(),
+            "declined_at should be cleared when approving"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_status_transition_decline_clears_approved() -> Result<()> {
+        let db = NewsletterDatabase::in_memory()?;
+
+        let sub = Subscriber::new("transition2@example.com".to_string(), None);
+        db.add_subscriber(&sub)?;
+
+        // First approve
+        db.update_subscriber_status_by_email(
+            "transition2@example.com",
+            SubscriberStatus::Approved,
+        )?;
+        let s = db
+            .get_subscriber_by_email("transition2@example.com")?
+            .unwrap();
+        assert!(s.approved_at.is_some());
+
+        // Now decline — approved_at should be cleared
+        db.update_subscriber_status_by_email(
+            "transition2@example.com",
+            SubscriberStatus::Declined,
+        )?;
+        let s = db
+            .get_subscriber_by_email("transition2@example.com")?
+            .unwrap();
+        assert_eq!(s.status, SubscriberStatus::Declined);
+        assert!(s.declined_at.is_some());
+        assert!(
+            s.approved_at.is_none(),
+            "approved_at should be cleared when declining"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_tag_validation_rejects_invalid() -> Result<()> {
+        use crate::newsletter::MAX_TAG_LENGTH;
+
+        let db = NewsletterDatabase::in_memory()?;
+        let sub = Subscriber::new("tagval@example.com".to_string(), None);
+        let id = db.add_subscriber(&sub)?;
+
+        // Empty tag
+        assert!(db.add_tag(id, "").is_err());
+        // Tag with control characters
+        assert!(db.add_tag(id, "bad\ntag").is_err());
+        // Tag too long
+        let long_tag = "x".repeat(MAX_TAG_LENGTH + 1);
+        assert!(db.add_tag(id, &long_tag).is_err());
+        // Leading whitespace
+        assert!(db.add_tag(id, " leading").is_err());
+
+        // Valid tag should still work
+        assert!(db.add_tag(id, "valid-tag").is_ok());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_tags_validation_rejects_invalid() -> Result<()> {
+        use crate::newsletter::MAX_TAGS_PER_SUBSCRIBER;
+
+        let db = NewsletterDatabase::in_memory()?;
+        let sub = Subscriber::new("settagval@example.com".to_string(), None);
+        let id = db.add_subscriber(&sub)?;
+
+        // One invalid tag in the batch should fail
+        let tags = vec!["good".to_string(), "".to_string()];
+        assert!(db.set_tags(id, &tags).is_err());
+
+        // Too many tags
+        let many_tags: Vec<String> = (0..MAX_TAGS_PER_SUBSCRIBER + 1)
+            .map(|i| format!("tag{}", i))
+            .collect();
+        assert!(db.set_tags(id, &many_tags).is_err());
+
+        // Valid batch should work
+        let good = vec!["alpha".to_string(), "beta".to_string()];
+        assert!(db.set_tags(id, &good).is_ok());
+        assert_eq!(db.get_tags(id)?, vec!["alpha", "beta"]);
 
         Ok(())
     }

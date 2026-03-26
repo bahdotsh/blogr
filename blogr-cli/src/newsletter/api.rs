@@ -8,18 +8,20 @@ use axum::{
     extract::{Path, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
-    response::{Html, Json, Response},
+    response::{Html, IntoResponse, Json, Response},
     routing::{delete, get, post, put},
     Router,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 
 use super::database::BounceRecord;
+use super::is_valid_tag;
 use super::webhooks::BounceWebhookPayload;
 use super::{NewsletterManager, Subscriber, SubscriberStatus};
 use crate::config::Config;
@@ -53,6 +55,59 @@ const MAX_CONFIRMATION_TASKS: usize = 10;
 
 /// Maximum page size for list/export endpoints to prevent OOM on large databases.
 const MAX_PAGE_SIZE: usize = 1000;
+
+/// Simple sliding-window rate limiter.
+/// Tracks request timestamps within a 60-second window and rejects
+/// requests that exceed the configured limit.
+#[derive(Clone)]
+struct RateLimiter {
+    timestamps: Arc<Mutex<VecDeque<std::time::Instant>>>,
+    max_requests: u32,
+}
+
+impl RateLimiter {
+    fn new(max_requests_per_minute: u32) -> Self {
+        Self {
+            timestamps: Arc::new(Mutex::new(VecDeque::new())),
+            max_requests: max_requests_per_minute,
+        }
+    }
+
+    async fn check(&self) -> bool {
+        let mut timestamps = self.timestamps.lock().await;
+        let now = std::time::Instant::now();
+        let window = std::time::Duration::from_secs(60);
+
+        // Remove timestamps outside the window
+        while timestamps
+            .front()
+            .is_some_and(|t| now.duration_since(*t) > window)
+        {
+            timestamps.pop_front();
+        }
+
+        if timestamps.len() >= self.max_requests as usize {
+            return false;
+        }
+
+        timestamps.push_back(now);
+        true
+    }
+}
+
+/// Rate limiting middleware
+async fn rate_limit_middleware(req: Request, next: Next, limiter: Arc<RateLimiter>) -> Response {
+    if !limiter.check().await {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ApiResponse::<()>::error(
+                "Rate limit exceeded. Try again later.".to_string(),
+            )),
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
 
 /// API server application state
 #[derive(Clone)]
@@ -208,6 +263,7 @@ impl NewsletterApiServer {
     fn create_router(self) -> Router {
         let api_key = self.state.api_config.api_key.clone();
         let cors_enabled = self.state.api_config.cors_enabled;
+        let rate_limit = self.state.api_config.rate_limit;
 
         // Build CORS layer before self.state is moved — restrict to configured
         // api_base_url origin if available, otherwise permissive for local dev.
@@ -272,6 +328,17 @@ impl NewsletterApiServer {
         }
 
         let mut app = public_routes.merge(protected_routes).with_state(self.state);
+
+        // Apply rate limiting if configured
+        if let Some(limit) = rate_limit {
+            if limit > 0 {
+                let limiter = Arc::new(RateLimiter::new(limit));
+                app = app.layer(middleware::from_fn(move |req, next| {
+                    let limiter = Arc::clone(&limiter);
+                    rate_limit_middleware(req, next, limiter)
+                }));
+            }
+        }
 
         if let Some(cors) = cors_layer {
             app = app.layer(cors);
@@ -673,15 +740,13 @@ async fn update_subscriber(
         match status {
             SubscriberStatus::Approved => {
                 subscriber.status = SubscriberStatus::Approved;
-                if subscriber.approved_at.is_none() {
-                    subscriber.approved_at = Some(chrono::Utc::now());
-                }
+                subscriber.approved_at = Some(chrono::Utc::now());
+                subscriber.declined_at = None;
             }
             SubscriberStatus::Declined => {
                 subscriber.status = SubscriberStatus::Declined;
-                if subscriber.declined_at.is_none() {
-                    subscriber.declined_at = Some(chrono::Utc::now());
-                }
+                subscriber.declined_at = Some(chrono::Utc::now());
+                subscriber.approved_at = None;
             }
             SubscriberStatus::Pending | SubscriberStatus::Unconfirmed => {
                 subscriber.status = status;
@@ -791,6 +856,30 @@ async fn update_subscriber_tags(
     Path(email): Path<String>,
     Json(request): Json<UpdateTagsRequest>,
 ) -> Result<Json<ApiResponse<Vec<String>>>, (StatusCode, Json<ApiResponse<()>>)> {
+    // Validate all tags before querying the database
+    for tag in &request.tags {
+        if !is_valid_tag(tag) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::error(format!(
+                    "Invalid tag {:?}: must be non-empty, at most {} chars, no control characters",
+                    tag,
+                    super::MAX_TAG_LENGTH,
+                ))),
+            ));
+        }
+    }
+    if request.tags.len() > super::MAX_TAGS_PER_SUBSCRIBER {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::error(format!(
+                "Too many tags: {} provided (max {})",
+                request.tags.len(),
+                super::MAX_TAGS_PER_SUBSCRIBER,
+            ))),
+        ));
+    }
+
     let subscriber = match state
         .newsletter_manager
         .database()
