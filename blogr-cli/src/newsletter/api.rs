@@ -24,7 +24,7 @@ use tower_http::cors::{Any, CorsLayer};
 use super::database::BounceRecord;
 use super::is_valid_tag;
 use super::webhooks::BounceWebhookPayload;
-use super::{NewsletterManager, Subscriber, SubscriberStatus};
+use super::{Newsletter, NewsletterManager, Subscriber, SubscriberStatus};
 use crate::config::Config;
 use crate::newsletter::sender;
 
@@ -60,6 +60,11 @@ const MAX_CONFIRMATION_TASKS: usize = 10;
 
 /// Maximum page size for list/export endpoints to prevent OOM on large databases.
 const MAX_PAGE_SIZE: usize = 1000;
+
+/// Maximum number of subscribers for synchronous sends via the API.
+/// For larger lists, use the CLI (`blogr newsletter send`) which supports
+/// progress reporting and resumable sends.
+const MAX_SYNC_SEND_SUBSCRIBERS: usize = 500;
 
 /// Per-IP sliding-window rate limiter.
 /// Tracks request timestamps per client IP within a 60-second window
@@ -279,8 +284,15 @@ pub struct SendNewsletterRequest {
     pub tag: Option<String>,
 }
 
+/// Preview newsletter request
+#[derive(Deserialize)]
+pub struct PreviewNewsletterRequest {
+    pub subject: String,
+    pub content: String,
+}
+
 /// Newsletter preview response
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct NewsletterPreview {
     pub subject: String,
     pub html_content: String,
@@ -1207,93 +1219,20 @@ async fn get_bounces(
 
 // --- Newsletter endpoints ---
 
-/// POST /newsletters/send — compose and send a custom newsletter to subscribers
-async fn handle_send_newsletter(
-    State(state): State<ApiState>,
-    Json(request): Json<SendNewsletterRequest>,
-) -> Result<Json<ApiResponse<sender::SendReport>>, (StatusCode, Json<ApiResponse<()>>)> {
-    if request.subject.trim().is_empty() {
+/// Validate request fields and compose a newsletter.
+/// Shared by the send and preview handlers.
+fn compose_newsletter(
+    state: &ApiState,
+    subject: String,
+    content: String,
+) -> Result<Newsletter, (StatusCode, Json<ApiResponse<()>>)> {
+    if subject.trim().is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ApiResponse::error("Subject cannot be empty".to_string())),
         ));
     }
-    if request.content.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::error("Content cannot be empty".to_string())),
-        ));
-    }
-
-    // Compose the newsletter (sync, before any await)
-    let newsletter = {
-        let theme = blogr_themes::get_theme(&state.config.theme.name).ok_or_else(|| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!(
-                    "Theme '{}' not found",
-                    state.config.theme.name
-                ))),
-            )
-        })?;
-
-        let composer = state
-            .newsletter_manager
-            .create_composer(theme)
-            .map_err(|e| {
-                eprintln!("Failed to create composer: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiResponse::error(
-                        "Failed to create newsletter composer".to_string(),
-                    )),
-                )
-            })?;
-
-        composer
-            .compose_custom(request.subject, request.content)
-            .map_err(|e| {
-                eprintln!("Failed to compose newsletter: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiResponse::error(
-                        "Failed to compose newsletter".to_string(),
-                    )),
-                )
-            })?
-    };
-
-    // Send to all approved subscribers (optionally filtered by tag)
-    let report = state
-        .newsletter_manager
-        .send_newsletter_with_tag(&newsletter, false, request.tag.as_deref())
-        .await
-        .map_err(|e| {
-            eprintln!("Failed to send newsletter: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!(
-                    "Failed to send newsletter: {}",
-                    e
-                ))),
-            )
-        })?;
-
-    Ok(Json(ApiResponse::success(report)))
-}
-
-/// POST /newsletters/preview — compose a custom newsletter and return a preview
-async fn handle_preview_newsletter(
-    State(state): State<ApiState>,
-    Json(request): Json<SendNewsletterRequest>,
-) -> Result<Json<ApiResponse<NewsletterPreview>>, (StatusCode, Json<ApiResponse<()>>)> {
-    if request.subject.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::error("Subject cannot be empty".to_string())),
-        ));
-    }
-    if request.content.trim().is_empty() {
+    if content.trim().is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ApiResponse::error("Content cannot be empty".to_string())),
@@ -1323,17 +1262,76 @@ async fn handle_preview_newsletter(
             )
         })?;
 
-    let newsletter = composer
-        .compose_custom(request.subject, request.content)
+    composer.compose_custom(subject, content).map_err(|e| {
+        eprintln!("Failed to compose newsletter: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(
+                "Failed to compose newsletter".to_string(),
+            )),
+        )
+    })
+}
+
+/// POST /newsletters/send — compose and send a custom newsletter to subscribers
+async fn handle_send_newsletter(
+    State(state): State<ApiState>,
+    Json(request): Json<SendNewsletterRequest>,
+) -> Result<Json<ApiResponse<sender::SendReport>>, (StatusCode, Json<ApiResponse<()>>)> {
+    let newsletter = compose_newsletter(&state, request.subject, request.content)?;
+
+    // Guard against long-running synchronous sends. For larger subscriber
+    // lists, use the CLI which supports progress reporting and resumable sends.
+    let subscriber_count = state
+        .newsletter_manager
+        .database()
+        .get_subscribers(Some(SubscriberStatus::Approved))
+        .map(|s| s.len())
         .map_err(|e| {
-            eprintln!("Failed to compose newsletter: {}", e);
+            eprintln!("Failed to count subscribers: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ApiResponse::error(
-                    "Failed to compose newsletter".to_string(),
+                    "Failed to count subscribers".to_string(),
                 )),
             )
         })?;
+
+    if subscriber_count > MAX_SYNC_SEND_SUBSCRIBERS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::error(format!(
+                "Too many subscribers ({subscriber_count}) for synchronous API send \
+                 (limit: {MAX_SYNC_SEND_SUBSCRIBERS}). Use the CLI \
+                 (`blogr newsletter send`) for large lists."
+            ))),
+        ));
+    }
+
+    let report = state
+        .newsletter_manager
+        .send_newsletter_with_tag(&newsletter, false, request.tag.as_deref())
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to send newsletter: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!(
+                    "Failed to send newsletter: {}",
+                    e
+                ))),
+            )
+        })?;
+
+    Ok(Json(ApiResponse::success(report)))
+}
+
+/// POST /newsletters/preview — compose a custom newsletter and return a preview
+async fn handle_preview_newsletter(
+    State(state): State<ApiState>,
+    Json(request): Json<PreviewNewsletterRequest>,
+) -> Result<Json<ApiResponse<NewsletterPreview>>, (StatusCode, Json<ApiResponse<()>>)> {
+    let newsletter = compose_newsletter(&state, request.subject, request.content)?;
 
     Ok(Json(ApiResponse::success(NewsletterPreview {
         subject: newsletter.subject,
@@ -1802,5 +1800,170 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             "proxy headers should be ignored when trust_proxy is false"
         );
+    }
+
+    // --- Newsletter endpoint tests ---
+
+    /// Helper that creates a test state with a valid theme name so
+    /// compose_newsletter / preview / send can succeed.
+    async fn create_test_state_with_theme() -> (ApiState, tempfile::TempDir) {
+        let temp_dir = tempdir().unwrap();
+        let mut config = Config::default();
+        config.theme.name = "Minimal Retro".to_string();
+        let newsletter_manager =
+            NewsletterManager::new(config.clone(), temp_dir.path()).unwrap();
+        let state = ApiState {
+            newsletter_manager: Arc::new(newsletter_manager),
+            config: Arc::new(config),
+            api_config: Arc::new(ApiConfig::default()),
+            confirmation_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONFIRMATION_TASKS,
+            )),
+        };
+        (state, temp_dir)
+    }
+
+    #[tokio::test]
+    async fn test_preview_newsletter_success() {
+        let (state, _dir) = create_test_state_with_theme().await;
+        let request = PreviewNewsletterRequest {
+            subject: "Test Newsletter".to_string(),
+            content: "Hello **world**!".to_string(),
+        };
+        let result = handle_preview_newsletter(State(state), Json(request)).await;
+        assert!(result.is_ok());
+        let preview = result.unwrap().0.data.unwrap();
+        assert_eq!(preview.subject, "Test Newsletter");
+        assert!(!preview.html_content.is_empty());
+        assert!(!preview.text_content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_preview_newsletter_empty_subject() {
+        let (state, _dir) = create_test_state_with_theme().await;
+        let request = PreviewNewsletterRequest {
+            subject: "".to_string(),
+            content: "Some content".to_string(),
+        };
+        let result = handle_preview_newsletter(State(state), Json(request)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_preview_newsletter_empty_content() {
+        let (state, _dir) = create_test_state_with_theme().await;
+        let request = PreviewNewsletterRequest {
+            subject: "A Subject".to_string(),
+            content: "".to_string(),
+        };
+        let result = handle_preview_newsletter(State(state), Json(request)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_preview_newsletter_whitespace_only_subject() {
+        let (state, _dir) = create_test_state_with_theme().await;
+        let request = PreviewNewsletterRequest {
+            subject: "   ".to_string(),
+            content: "Some content".to_string(),
+        };
+        let result = handle_preview_newsletter(State(state), Json(request)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_send_newsletter_empty_subject() {
+        let (state, _dir) = create_test_state_with_theme().await;
+        let request = SendNewsletterRequest {
+            subject: "".to_string(),
+            content: "Some content".to_string(),
+            tag: None,
+        };
+        let result = handle_send_newsletter(State(state), Json(request)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_send_newsletter_empty_content() {
+        let (state, _dir) = create_test_state_with_theme().await;
+        let request = SendNewsletterRequest {
+            subject: "A Subject".to_string(),
+            content: "".to_string(),
+            tag: None,
+        };
+        let result = handle_send_newsletter(State(state), Json(request)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_compose_newsletter_theme_not_found() {
+        // Default config has "minimal-retro" which doesn't match any theme
+        let temp_dir = tempdir().unwrap();
+        let config = Config::default();
+        let newsletter_manager =
+            NewsletterManager::new(config.clone(), temp_dir.path()).unwrap();
+        let state = ApiState {
+            newsletter_manager: Arc::new(newsletter_manager),
+            config: Arc::new(config),
+            api_config: Arc::new(ApiConfig::default()),
+            confirmation_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONFIRMATION_TASKS,
+            )),
+        };
+
+        let result = compose_newsletter(
+            &state,
+            "Test Subject".to_string(),
+            "Test content".to_string(),
+        );
+        assert!(result.is_err());
+        let (status, body) = result.unwrap_err();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(body.0.error.unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_send_newsletter_subscriber_limit() {
+        let (state, _dir) = create_test_state_with_theme().await;
+
+        // Insert subscribers exceeding the limit directly into the database
+        for i in 0..=MAX_SYNC_SEND_SUBSCRIBERS {
+            let subscriber = Subscriber {
+                id: None,
+                email: format!("user{i}@example.com"),
+                status: SubscriberStatus::Approved,
+                subscribed_at: chrono::Utc::now(),
+                approved_at: Some(chrono::Utc::now()),
+                declined_at: None,
+                source_email_id: Some("test".to_string()),
+                notes: None,
+            };
+            state
+                .newsletter_manager
+                .database()
+                .add_subscriber(&subscriber)
+                .unwrap();
+        }
+
+        let request = SendNewsletterRequest {
+            subject: "Test Newsletter".to_string(),
+            content: "Hello world!".to_string(),
+            tag: None,
+        };
+        let result = handle_send_newsletter(State(state), Json(request)).await;
+        assert!(result.is_err());
+        let (status, body) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.0.error.unwrap().contains("Too many subscribers"));
     }
 }
