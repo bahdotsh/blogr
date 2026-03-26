@@ -1098,6 +1098,7 @@ impl NewsletterDatabase {
 
     /// Add a tag to a subscriber.
     /// Validates tag format and length before insertion.
+    /// Uses a transaction to prevent TOCTOU races on the tag count check.
     pub fn add_tag(&self, subscriber_id: i64, tag: &str) -> Result<()> {
         if !super::is_valid_tag(tag) {
             anyhow::bail!(
@@ -1105,19 +1106,26 @@ impl NewsletterDatabase {
                 super::MAX_TAG_LENGTH,
             );
         }
-        let tag_count = self.get_tags(subscriber_id)?.len();
-        if tag_count >= super::MAX_TAGS_PER_SUBSCRIBER {
+        let conn = self.get_conn()?;
+        let tx = conn.unchecked_transaction()?;
+
+        let tag_count: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM subscriber_tags WHERE subscriber_id = ?1",
+            params![subscriber_id],
+            |row| row.get(0),
+        )?;
+        if tag_count as usize >= super::MAX_TAGS_PER_SUBSCRIBER {
             anyhow::bail!(
                 "Tag limit reached: subscriber already has {} tags (max {})",
                 tag_count,
                 super::MAX_TAGS_PER_SUBSCRIBER,
             );
         }
-        let conn = self.get_conn()?;
-        conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO subscriber_tags (subscriber_id, tag) VALUES (?1, ?2)",
             params![subscriber_id, tag],
         )?;
+        tx.commit()?;
         Ok(())
     }
 

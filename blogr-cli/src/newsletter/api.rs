@@ -358,6 +358,13 @@ impl NewsletterApiServer {
                         .allow_methods(Any)
                         .allow_headers(Any)
                 } else {
+                    eprintln!(
+                        "WARNING: api_base_url {:?} is not a valid CORS origin. \
+                         Falling back to permissive CORS (allow all origins). \
+                         Set api_base_url to a valid origin (e.g., \"https://example.com\") \
+                         to restrict CORS.",
+                        base_url
+                    );
                     CorsLayer::new()
                         .allow_origin(Any)
                         .allow_methods(Any)
@@ -884,12 +891,69 @@ async fn delete_subscriber(
     }
 }
 
-/// Export subscribers endpoint
+/// Export response with pagination metadata
+#[derive(Serialize)]
+pub struct ExportResponse {
+    pub subscribers: Vec<Subscriber>,
+    pub total: i64,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
+}
+
+/// Export subscribers endpoint with pagination metadata
 async fn export_subscribers(
     State(state): State<ApiState>,
     Query(params): Query<SubscriberQuery>,
-) -> Result<Json<ApiResponse<Vec<Subscriber>>>, (StatusCode, Json<ApiResponse<()>>)> {
-    list_subscribers(State(state), Query(params)).await
+) -> Result<Json<ApiResponse<ExportResponse>>, (StatusCode, Json<ApiResponse<()>>)> {
+    let db = state.newsletter_manager.database();
+    let limit = params.limit.unwrap_or(MAX_PAGE_SIZE).min(MAX_PAGE_SIZE);
+    let offset = params.offset.unwrap_or(0);
+
+    let status_filter = params
+        .status
+        .as_deref()
+        .and_then(|s| match s.to_lowercase().as_str() {
+            "pending" => Some(SubscriberStatus::Pending),
+            "approved" => Some(SubscriberStatus::Approved),
+            "declined" => Some(SubscriberStatus::Declined),
+            "unconfirmed" => Some(SubscriberStatus::Unconfirmed),
+            _ => None,
+        });
+
+    let total = db
+        .get_subscriber_count(status_filter.clone())
+        .map_err(|e| {
+            eprintln!("Failed to get subscriber count: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(
+                    "Failed to export subscribers".to_string(),
+                )),
+            )
+        })?;
+
+    let subscribers = db
+        .get_subscribers_paginated(status_filter, Some(limit), Some(offset))
+        .map_err(|e| {
+            eprintln!("Failed to export subscribers: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(
+                    "Failed to export subscribers".to_string(),
+                )),
+            )
+        })?;
+
+    let response = ExportResponse {
+        has_more: (offset + subscribers.len()) < total as usize,
+        subscribers,
+        total,
+        limit,
+        offset,
+    };
+
+    Ok(Json(ApiResponse::success(response)))
 }
 
 /// Get statistics endpoint
@@ -1453,18 +1517,12 @@ mod tests {
             }));
 
         // Request without ConnectInfo falls back to 0.0.0.0
-        let req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
         // Second request without ConnectInfo shares the same fallback bucket
-        let req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(
             resp.status(),
