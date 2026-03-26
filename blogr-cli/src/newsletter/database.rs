@@ -679,6 +679,20 @@ impl NewsletterDatabase {
         Ok(count)
     }
 
+    /// Get count of approved subscribers that have a specific tag.
+    /// Used by the API send endpoint to guard against oversized synchronous sends
+    /// when targeting a tag.
+    pub fn get_approved_subscriber_count_by_tag(&self, tag: &str) -> Result<i64> {
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT COUNT(*) FROM subscribers s
+             INNER JOIN subscriber_tags st ON st.subscriber_id = s.id
+             WHERE s.status = 'approved' AND st.tag = ?1",
+        )?;
+        let count: i64 = stmt.query_row(params![tag], |row| row.get(0))?;
+        Ok(count)
+    }
+
     /// Check if email already exists
     pub fn email_exists(&self, email: &str) -> Result<bool> {
         let conn = self.get_conn()?;

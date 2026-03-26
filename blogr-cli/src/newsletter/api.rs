@@ -1278,24 +1278,44 @@ async fn handle_send_newsletter(
     State(state): State<ApiState>,
     Json(request): Json<SendNewsletterRequest>,
 ) -> Result<Json<ApiResponse<sender::SendReport>>, (StatusCode, Json<ApiResponse<()>>)> {
+    // Validate tag before any work
+    if let Some(ref tag) = request.tag {
+        if !is_valid_tag(tag) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::error(format!(
+                    "Invalid tag {:?}: must be non-empty, at most {} chars, no control characters",
+                    tag,
+                    super::MAX_TAG_LENGTH,
+                ))),
+            ));
+        }
+    }
+
     let newsletter = compose_newsletter(&state, request.subject, request.content)?;
 
     // Guard against long-running synchronous sends. For larger subscriber
     // lists, use the CLI which supports progress reporting and resumable sends.
-    let subscriber_count = state
-        .newsletter_manager
-        .database()
-        .get_subscribers(Some(SubscriberStatus::Approved))
-        .map(|s| s.len())
-        .map_err(|e| {
-            eprintln!("Failed to count subscribers: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(
-                    "Failed to count subscribers".to_string(),
-                )),
-            )
-        })?;
+    // Count only the target population (tag-filtered when applicable).
+    let subscriber_count = match &request.tag {
+        Some(tag) => state
+            .newsletter_manager
+            .database()
+            .get_approved_subscriber_count_by_tag(tag),
+        None => state
+            .newsletter_manager
+            .database()
+            .get_subscriber_count(Some(SubscriberStatus::Approved)),
+    }
+    .map_err(|e| {
+        eprintln!("Failed to count subscribers: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(
+                "Failed to count subscribers".to_string(),
+            )),
+        )
+    })? as usize;
 
     if subscriber_count > MAX_SYNC_SEND_SUBSCRIBERS {
         return Err((
@@ -1810,15 +1830,12 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let mut config = Config::default();
         config.theme.name = "Minimal Retro".to_string();
-        let newsletter_manager =
-            NewsletterManager::new(config.clone(), temp_dir.path()).unwrap();
+        let newsletter_manager = NewsletterManager::new(config.clone(), temp_dir.path()).unwrap();
         let state = ApiState {
             newsletter_manager: Arc::new(newsletter_manager),
             config: Arc::new(config),
             api_config: Arc::new(ApiConfig::default()),
-            confirmation_semaphore: Arc::new(tokio::sync::Semaphore::new(
-                MAX_CONFIRMATION_TASKS,
-            )),
+            confirmation_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONFIRMATION_TASKS)),
         };
         (state, temp_dir)
     }
@@ -1910,15 +1927,12 @@ mod tests {
         // Default config has "minimal-retro" which doesn't match any theme
         let temp_dir = tempdir().unwrap();
         let config = Config::default();
-        let newsletter_manager =
-            NewsletterManager::new(config.clone(), temp_dir.path()).unwrap();
+        let newsletter_manager = NewsletterManager::new(config.clone(), temp_dir.path()).unwrap();
         let state = ApiState {
             newsletter_manager: Arc::new(newsletter_manager),
             config: Arc::new(config),
             api_config: Arc::new(ApiConfig::default()),
-            confirmation_semaphore: Arc::new(tokio::sync::Semaphore::new(
-                MAX_CONFIRMATION_TASKS,
-            )),
+            confirmation_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONFIRMATION_TASKS)),
         };
 
         let result = compose_newsletter(
@@ -1965,5 +1979,82 @@ mod tests {
         let (status, body) = result.unwrap_err();
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body.0.error.unwrap().contains("Too many subscribers"));
+    }
+
+    #[tokio::test]
+    async fn test_send_newsletter_invalid_tag() {
+        let (state, _dir) = create_test_state_with_theme().await;
+        let request = SendNewsletterRequest {
+            subject: "Test Newsletter".to_string(),
+            content: "Hello world!".to_string(),
+            tag: Some("bad\x00tag".to_string()),
+        };
+        let result = handle_send_newsletter(State(state), Json(request)).await;
+        assert!(result.is_err());
+        let (status, body) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.0.error.unwrap().contains("Invalid tag"));
+    }
+
+    #[tokio::test]
+    async fn test_send_newsletter_tag_scoped_subscriber_limit() {
+        let (state, _dir) = create_test_state_with_theme().await;
+
+        // Insert subscribers exceeding the limit, but only tag a few
+        for i in 0..=MAX_SYNC_SEND_SUBSCRIBERS {
+            let subscriber = Subscriber {
+                id: None,
+                email: format!("user{i}@example.com"),
+                status: SubscriberStatus::Approved,
+                subscribed_at: chrono::Utc::now(),
+                approved_at: Some(chrono::Utc::now()),
+                declined_at: None,
+                source_email_id: Some("test".to_string()),
+                notes: None,
+            };
+            state
+                .newsletter_manager
+                .database()
+                .add_subscriber(&subscriber)
+                .unwrap();
+        }
+
+        // Tag only 2 subscribers — well under the limit
+        let db = state.newsletter_manager.database();
+        db.add_tag(1, "vip").unwrap();
+        db.add_tag(2, "vip").unwrap();
+
+        // Without tag: should be rejected (501 > 500)
+        let request = SendNewsletterRequest {
+            subject: "Test".to_string(),
+            content: "Hello".to_string(),
+            tag: None,
+        };
+        let result = handle_send_newsletter(State(state.clone()), Json(request)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // With tag "vip": should NOT be rejected (only 2 tagged subscribers)
+        let request = SendNewsletterRequest {
+            subject: "Test".to_string(),
+            content: "Hello".to_string(),
+            tag: Some("vip".to_string()),
+        };
+        let result = handle_send_newsletter(State(state), Json(request)).await;
+        // This will fail at the actual send step (no SMTP configured),
+        // but it should NOT fail with the subscriber limit error
+        assert!(result.is_err());
+        let (status, body) = result.unwrap_err();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            !body
+                .0
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("Too many subscribers"),
+            "tagged send should not be rejected by subscriber limit"
+        );
     }
 }
