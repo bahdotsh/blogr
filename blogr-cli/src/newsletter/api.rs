@@ -271,6 +271,22 @@ pub struct BounceQuery {
     pub email: String,
 }
 
+/// Send newsletter request
+#[derive(Deserialize)]
+pub struct SendNewsletterRequest {
+    pub subject: String,
+    pub content: String,
+    pub tag: Option<String>,
+}
+
+/// Newsletter preview response
+#[derive(Serialize)]
+pub struct NewsletterPreview {
+    pub subject: String,
+    pub html_content: String,
+    pub text_content: String,
+}
+
 /// Newsletter API server
 pub struct NewsletterApiServer {
     state: ApiState,
@@ -401,7 +417,9 @@ impl NewsletterApiServer {
             .route("/stats", get(get_stats))
             .route("/tags", get(list_tags))
             .route("/webhooks/bounce", post(handle_bounce_webhook))
-            .route("/bounces", get(get_bounces));
+            .route("/bounces", get(get_bounces))
+            .route("/newsletters/send", post(handle_send_newsletter))
+            .route("/newsletters/preview", post(handle_preview_newsletter));
 
         // Add API key authentication middleware if configured
         if let Some(key) = api_key {
@@ -1185,6 +1203,143 @@ async fn get_bounces(
             ))
         }
     }
+}
+
+// --- Newsletter endpoints ---
+
+/// POST /newsletters/send — compose and send a custom newsletter to subscribers
+async fn handle_send_newsletter(
+    State(state): State<ApiState>,
+    Json(request): Json<SendNewsletterRequest>,
+) -> Result<Json<ApiResponse<sender::SendReport>>, (StatusCode, Json<ApiResponse<()>>)> {
+    if request.subject.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::error("Subject cannot be empty".to_string())),
+        ));
+    }
+    if request.content.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::error("Content cannot be empty".to_string())),
+        ));
+    }
+
+    // Compose the newsletter (sync, before any await)
+    let newsletter = {
+        let theme = blogr_themes::get_theme(&state.config.theme.name).ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!(
+                    "Theme '{}' not found",
+                    state.config.theme.name
+                ))),
+            )
+        })?;
+
+        let composer = state
+            .newsletter_manager
+            .create_composer(theme)
+            .map_err(|e| {
+                eprintln!("Failed to create composer: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiResponse::error(
+                        "Failed to create newsletter composer".to_string(),
+                    )),
+                )
+            })?;
+
+        composer
+            .compose_custom(request.subject, request.content)
+            .map_err(|e| {
+                eprintln!("Failed to compose newsletter: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiResponse::error(
+                        "Failed to compose newsletter".to_string(),
+                    )),
+                )
+            })?
+    };
+
+    // Send to all approved subscribers (optionally filtered by tag)
+    let report = state
+        .newsletter_manager
+        .send_newsletter_with_tag(&newsletter, false, request.tag.as_deref())
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to send newsletter: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!(
+                    "Failed to send newsletter: {}",
+                    e
+                ))),
+            )
+        })?;
+
+    Ok(Json(ApiResponse::success(report)))
+}
+
+/// POST /newsletters/preview — compose a custom newsletter and return a preview
+async fn handle_preview_newsletter(
+    State(state): State<ApiState>,
+    Json(request): Json<SendNewsletterRequest>,
+) -> Result<Json<ApiResponse<NewsletterPreview>>, (StatusCode, Json<ApiResponse<()>>)> {
+    if request.subject.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::error("Subject cannot be empty".to_string())),
+        ));
+    }
+    if request.content.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::error("Content cannot be empty".to_string())),
+        ));
+    }
+
+    let theme = blogr_themes::get_theme(&state.config.theme.name).ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(format!(
+                "Theme '{}' not found",
+                state.config.theme.name
+            ))),
+        )
+    })?;
+
+    let composer = state
+        .newsletter_manager
+        .create_composer(theme)
+        .map_err(|e| {
+            eprintln!("Failed to create composer: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(
+                    "Failed to create newsletter composer".to_string(),
+                )),
+            )
+        })?;
+
+    let newsletter = composer
+        .compose_custom(request.subject, request.content)
+        .map_err(|e| {
+            eprintln!("Failed to compose newsletter: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(
+                    "Failed to compose newsletter".to_string(),
+                )),
+            )
+        })?;
+
+    Ok(Json(ApiResponse::success(NewsletterPreview {
+        subject: newsletter.subject,
+        html_content: newsletter.html_content,
+        text_content: newsletter.text_content,
+    })))
 }
 
 /// Get the HMAC secret via the NewsletterManager (single source of truth).
