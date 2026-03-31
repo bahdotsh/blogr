@@ -64,6 +64,9 @@ enum Commands {
         /// Open in TUI editor instead of external editor
         #[arg(long)]
         tui: bool,
+        /// URL for an external post (appears in listings but links externally)
+        #[arg(long)]
+        external_url: Option<String>,
     },
     /// List all blog posts
     List {
@@ -442,7 +445,8 @@ async fn main() -> Result<()> {
             slug,
             tags,
             tui,
-        } => new::handle_new(title, template, draft, slug, tags, tui).await,
+            external_url,
+        } => new::handle_new(title, template, draft, slug, tags, tui, external_url).await,
         Commands::List {
             drafts,
             published,

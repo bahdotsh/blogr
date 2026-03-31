@@ -10,6 +10,7 @@ pub async fn handle_new(
     slug: Option<String>,
     tags: Option<String>,
     use_tui: bool,
+    external_url: Option<String>,
 ) -> Result<()> {
     Console::info(&format!("Creating new post: '{}'", title));
 
@@ -32,6 +33,7 @@ pub async fn handle_new(
     };
 
     // Create new post
+    let is_external = external_url.is_some();
     let post = Post::new(
         title.clone(),
         config.blog.author.clone(),
@@ -39,7 +41,8 @@ pub async fn handle_new(
         tags,
         slug,
         status,
-    );
+        external_url,
+    )?;
 
     // Save the post
     let post_manager = PostManager::new(project.posts_dir());
@@ -54,8 +57,12 @@ pub async fn handle_new(
         println!("🏷️  Tags: {}", post.metadata.tags.join(", "));
     }
 
-    // Launch TUI editor if requested
-    if use_tui {
+    if let Some(ref url) = post.metadata.external_url {
+        println!("🔗 External URL: {}", url);
+    }
+
+    // Launch TUI editor if requested (skip for external posts)
+    if use_tui && !is_external {
         println!();
         println!("🚀 Launching TUI editor...");
 
@@ -68,7 +75,7 @@ pub async fn handle_new(
 
         Console::success("Post edited and saved!");
         println!("📝 Final post saved to: {}", final_file_path.display());
-    } else {
+    } else if !is_external {
         println!();
         println!("💡 Next steps:");
         println!("  • Edit the post: blogr edit {} --tui", post.metadata.slug);

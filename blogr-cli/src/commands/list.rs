@@ -79,7 +79,16 @@ pub async fn handle_list(
             PostStatus::Draft => "📝",
         };
 
-        let featured_icon = if post.metadata.featured { "⭐" } else { "  " };
+        // Show both featured and external status; featured takes left slot
+        let featured_icon = if post.metadata.featured && post.is_external() {
+            "⭐🔗"
+        } else if post.metadata.featured {
+            "⭐  "
+        } else if post.is_external() {
+            "  🔗"
+        } else {
+            "    "
+        };
 
         let local_date: DateTime<Local> = post.metadata.date.into();
         let date_str = local_date.format("%Y-%m-%d %H:%M").to_string();

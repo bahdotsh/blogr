@@ -17,6 +17,8 @@ pub struct PostMetadata {
     pub slug: String,
     #[serde(default)]
     pub featured: bool,
+    #[serde(default)]
+    pub external_url: Option<String>,
 }
 
 fn deserialize_date<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
@@ -65,6 +67,26 @@ pub struct Post {
 }
 
 impl Post {
+    /// Validate an external URL: must be http(s) with a non-empty host.
+    fn validate_external_url(url: &str) -> Result<()> {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(anyhow!(
+                "external_url must start with http:// or https://, got: {}",
+                url
+            ));
+        }
+        // Ensure the URL has a real host (reject bare schemes and authority-less paths)
+        let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or("");
+        if after_scheme.is_empty()
+            || after_scheme.starts_with('/')
+            || after_scheme.starts_with('?')
+            || after_scheme.starts_with('#')
+        {
+            return Err(anyhow!("external_url must include a host, got: {}", url));
+        }
+        Ok(())
+    }
+
     /// Create a new post with the given metadata
     pub fn new(
         title: String,
@@ -73,7 +95,13 @@ impl Post {
         tags: Vec<String>,
         slug: Option<String>,
         status: PostStatus,
-    ) -> Self {
+        external_url: Option<String>,
+    ) -> Result<Self> {
+        // Validate external URL if provided
+        if let Some(ref url) = external_url {
+            Self::validate_external_url(url)?;
+        }
+
         let slug = slug.unwrap_or_else(|| Self::generate_slug(&title));
         let description = description.unwrap_or_else(|| format!("A post about {}", title));
 
@@ -86,12 +114,35 @@ impl Post {
             status,
             slug: slug.clone(),
             featured: false,
+            external_url: external_url.clone(),
         };
 
-        Self {
+        let content = if external_url.is_some() {
+            String::new()
+        } else {
+            format!("# {}\n\nYour content goes here...", title)
+        };
+
+        Ok(Self {
             metadata,
-            content: format!("# {}\n\nYour content goes here...", title),
+            content,
             file_path: PathBuf::from(format!("{}.md", slug)),
+        })
+    }
+
+    /// Check if this is an external post (links to external URL)
+    pub fn is_external(&self) -> bool {
+        self.metadata.external_url.is_some()
+    }
+
+    /// Get the URL for this post. Returns an absolute URL for external posts,
+    /// or a relative path (e.g. "posts/slug.html") for local posts. Callers
+    /// rendering into templates should apply the `url()` helper to local paths
+    /// but use external URLs as-is.
+    pub fn post_url(&self) -> String {
+        match &self.metadata.external_url {
+            Some(url) => url.clone(),
+            None => format!("posts/{}.html", self.metadata.slug),
         }
     }
 
@@ -106,6 +157,11 @@ impl Post {
         // Parse metadata from frontmatter
         let metadata: PostMetadata = serde_yaml::from_str(&frontmatter)
             .map_err(|e| anyhow!("Failed to parse frontmatter: {}", e))?;
+
+        // Validate external URL if present (files can be hand-edited)
+        if let Some(ref url) = metadata.external_url {
+            Self::validate_external_url(url)?;
+        }
 
         Ok(Self {
             metadata,
@@ -129,6 +185,8 @@ impl Post {
             status: PostStatus,
             slug: String,
             featured: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            external_url: Option<String>,
         }
 
         let serializable = SerializableMetadata {
@@ -140,6 +198,7 @@ impl Post {
             status: self.metadata.status.clone(),
             slug: self.metadata.slug.clone(),
             featured: self.metadata.featured,
+            external_url: self.metadata.external_url.clone(),
         };
 
         // Create frontmatter
@@ -203,6 +262,9 @@ impl Post {
 
     /// Get estimated reading time in minutes
     pub fn reading_time(&self) -> usize {
+        if self.is_external() {
+            return 0;
+        }
         const WORDS_PER_MINUTE: usize = 200;
         let word_count = self.content.split_whitespace().count();
         (word_count / WORDS_PER_MINUTE).max(1)
@@ -390,7 +452,9 @@ This is the body of the post."#;
             vec!["test".to_string(), "example".to_string()],
             None,
             PostStatus::Draft,
-        );
+            None,
+        )
+        .unwrap();
 
         let file_path = temp_dir.path().join("test-post.md");
         post.save_to_file(&file_path).unwrap();
@@ -399,5 +463,248 @@ This is the body of the post."#;
         assert_eq!(loaded_post.metadata.title, "Test Post");
         assert_eq!(loaded_post.metadata.slug, "test-post");
         assert_eq!(loaded_post.metadata.tags, vec!["test", "example"]);
+        assert!(!loaded_post.is_external());
+        assert_eq!(loaded_post.metadata.external_url, None);
+    }
+
+    #[test]
+    fn test_external_post_creation_and_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let url = "https://example.com/my-article".to_string();
+        let post = Post::new(
+            "External Article".to_string(),
+            "Test Author".to_string(),
+            Some("An article from elsewhere".to_string()),
+            vec!["external".to_string()],
+            None,
+            PostStatus::Published,
+            Some(url.clone()),
+        )
+        .unwrap();
+
+        assert!(post.is_external());
+        assert_eq!(post.post_url(), url);
+        assert_eq!(post.reading_time(), 0);
+        assert!(post.content.is_empty());
+
+        let file_path = temp_dir.path().join("external-article.md");
+        post.save_to_file(&file_path).unwrap();
+
+        let loaded = Post::from_file(&file_path).unwrap();
+        assert!(loaded.is_external());
+        assert_eq!(loaded.metadata.external_url, Some(url));
+        assert_eq!(loaded.metadata.title, "External Article");
+    }
+
+    #[test]
+    fn test_backward_compat_no_external_url() {
+        let content = r#"---
+title: "Old Post"
+date: "2023-06-15"
+author: "Author"
+description: "A post without external_url field"
+tags: ["test"]
+status: "published"
+slug: "old-post"
+---
+
+Some content."#;
+
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("old-post.md");
+        std::fs::write(&file_path, content).unwrap();
+
+        let post = Post::from_file(&file_path).unwrap();
+        assert!(!post.is_external());
+        assert_eq!(post.metadata.external_url, None);
+        assert_eq!(post.post_url(), "posts/old-post.html");
+    }
+
+    #[test]
+    fn test_external_url_validation_rejects_invalid() {
+        let result = Post::new(
+            "Bad Link".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            None,
+            PostStatus::Published,
+            Some("not-a-url".to_string()),
+        );
+        assert!(result.is_err());
+
+        let result = Post::new(
+            "JS Injection".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            None,
+            PostStatus::Published,
+            Some("javascript:alert(1)".to_string()),
+        );
+        assert!(result.is_err());
+
+        // Bare scheme with no host
+        let result = Post::new(
+            "Bare Scheme".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            None,
+            PostStatus::Published,
+            Some("https://".to_string()),
+        );
+        assert!(result.is_err());
+
+        // Bare scheme with only a trailing slash
+        let result = Post::new(
+            "Bare Scheme Slash".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            None,
+            PostStatus::Published,
+            Some("https:///".to_string()),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_external_url_validation_accepts_valid() {
+        assert!(Post::new(
+            "HTTP".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            None,
+            PostStatus::Published,
+            Some("http://example.com".to_string()),
+        )
+        .is_ok());
+
+        assert!(Post::new(
+            "HTTPS".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            None,
+            PostStatus::Published,
+            Some("https://example.com/article".to_string()),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_external_url_validation_rejects_no_host_path() {
+        // https:///path has no host — should be rejected
+        let result = Post::new(
+            "No Host".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            None,
+            PostStatus::Published,
+            Some("https:///some/path".to_string()),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_file_rejects_malicious_external_url() {
+        let content = r#"---
+title: "Evil Post"
+date: "2023-06-15"
+author: "Author"
+description: "Looks harmless"
+tags: ["test"]
+status: "published"
+slug: "evil-post"
+external_url: "javascript:alert(document.cookie)"
+---
+
+"#;
+
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("evil-post.md");
+        std::fs::write(&file_path, content).unwrap();
+
+        let result = Post::from_file(&file_path);
+        assert!(result.is_err(), "from_file must reject javascript: URLs");
+
+        // Also reject data: scheme
+        let content_data = r#"---
+title: "Data Post"
+date: "2023-06-15"
+author: "Author"
+description: "data scheme"
+tags: []
+status: "published"
+slug: "data-post"
+external_url: "data:text/html,<script>alert(1)</script>"
+---
+
+"#;
+
+        let file_path2 = temp_dir.path().join("data-post.md");
+        std::fs::write(&file_path2, content_data).unwrap();
+
+        let result = Post::from_file(&file_path2);
+        assert!(result.is_err(), "from_file must reject data: URLs");
+    }
+
+    #[test]
+    fn test_from_file_accepts_valid_external_url() {
+        let content = r#"---
+title: "Good External"
+date: "2023-06-15"
+author: "Author"
+description: "A valid external post"
+tags: ["external"]
+status: "published"
+slug: "good-external"
+external_url: "https://example.com/article"
+---
+
+"#;
+
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("good-external.md");
+        std::fs::write(&file_path, content).unwrap();
+
+        let post = Post::from_file(&file_path).unwrap();
+        assert!(post.is_external());
+        assert_eq!(
+            post.metadata.external_url,
+            Some("https://example.com/article".to_string())
+        );
+    }
+
+    #[test]
+    fn test_post_url_local_vs_external() {
+        let local = Post::new(
+            "Local Post".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            Some("my-local-post".to_string()),
+            PostStatus::Published,
+            None,
+        )
+        .unwrap();
+        assert_eq!(local.post_url(), "posts/my-local-post.html");
+        assert!(!local.is_external());
+
+        let external = Post::new(
+            "External Post".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            None,
+            PostStatus::Published,
+            Some("https://example.com/article?a=1&b=2".to_string()),
+        )
+        .unwrap();
+        assert_eq!(external.post_url(), "https://example.com/article?a=1&b=2");
+        assert!(external.is_external());
     }
 }

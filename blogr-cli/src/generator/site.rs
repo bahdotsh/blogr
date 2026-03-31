@@ -15,6 +15,15 @@ use tera::{Context, Tera};
 const EMBEDDED_SEARCH_JS: &str = include_str!("../../static/js/search.js");
 const EMBEDDED_MINISEARCH_JS: &str = include_str!("../../static/js/vendor/minisearch.min.js");
 
+/// Escape a string for use in XML elements and attributes
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 /// Static site generator
 pub struct SiteBuilder {
     /// Project reference
@@ -328,6 +337,10 @@ Thank you!`);
     /// Generate individual post pages
     fn generate_post_pages(&self, posts: &[Post]) -> Result<()> {
         for post in posts {
+            // External posts don't get local HTML pages
+            if post.is_external() {
+                continue;
+            }
             let mut context = Context::new();
 
             // Add site config
@@ -501,14 +514,15 @@ Thank you!`);
             )?;
 
             // Calculate reading time (average 200 words per minute)
-            let word_count = post.content.split_whitespace().count();
-            let reading_time = (word_count / 200).max(1);
+            let reading_time = post.reading_time();
 
             // Create a struct that includes both post data and rendered content
             let post_data = serde_json::json!({
                 "metadata": post.metadata,
                 "content": html_content,
-                "reading_time": reading_time
+                "reading_time": reading_time,
+                "post_url": post.post_url(),
+                "is_external": post.is_external()
             });
 
             posts_with_content.push(post_data);
@@ -554,13 +568,14 @@ Thank you!`);
             )?;
 
             // Calculate reading time (average 200 words per minute)
-            let word_count = post.content.split_whitespace().count();
-            let reading_time = (word_count / 200).max(1);
+            let reading_time = post.reading_time();
 
             let post_data = serde_json::json!({
                 "metadata": post.metadata,
                 "content": html_content,
-                "reading_time": reading_time
+                "reading_time": reading_time,
+                "post_url": post.post_url(),
+                "is_external": post.is_external()
             });
 
             posts_with_content.push(post_data);
@@ -635,13 +650,14 @@ Thank you!`);
                 )?;
 
                 // Calculate reading time (average 200 words per minute)
-                let word_count = post.content.split_whitespace().count();
-                let reading_time = (word_count / 200).max(1);
+                let reading_time = post.reading_time();
 
                 let post_data = serde_json::json!({
                     "metadata": post.metadata,
                     "content": html_content,
-                    "reading_time": reading_time
+                    "reading_time": reading_time,
+                    "post_url": post.post_url(),
+                    "is_external": post.is_external()
                 });
 
                 posts_with_content.push(post_data);
@@ -698,19 +714,25 @@ Thank you!`);
         let mut rss_items = Vec::new();
 
         for post in recent_posts {
-            // Convert markdown to HTML for RSS content
-            let html_content = crate::generator::markdown::render_markdown(
-                &post.content,
-                self.config.math.enabled,
-            )?;
-
             // Create RSS item
-            let post_url = format!(
-                "{}/posts/{}.html",
-                effective_base_url.trim_end_matches('/'),
-                post.metadata.slug
-            );
+            let (post_url, description) = if post.is_external() {
+                (post.post_url(), post.metadata.description.clone())
+            } else {
+                let html_content = crate::generator::markdown::render_markdown(
+                    &post.content,
+                    self.config.math.enabled,
+                )?;
+                (
+                    format!(
+                        "{}/posts/{}.html",
+                        effective_base_url.trim_end_matches('/'),
+                        post.metadata.slug
+                    ),
+                    html_content,
+                )
+            };
 
+            let escaped_url = xml_escape(&post_url);
             let rss_item = format!(
                 r#"    <item>
       <title><![CDATA[{}]]></title>
@@ -721,9 +743,9 @@ Thank you!`);
       <author>{}</author>
     </item>"#,
                 post.metadata.title,
-                post_url,
-                post_url,
-                html_content,
+                escaped_url,
+                escaped_url,
+                description,
                 post.metadata.date.format("%a, %d %b %Y %H:%M:%S %z"),
                 self.config.blog.author
             );
@@ -777,19 +799,25 @@ Thank you!`);
         let mut atom_entries = Vec::new();
 
         for post in recent_posts {
-            // Convert markdown to HTML for Atom content
-            let html_content = crate::generator::markdown::render_markdown(
-                &post.content,
-                self.config.math.enabled,
-            )?;
-
             // Create Atom entry
-            let post_url = format!(
-                "{}/posts/{}.html",
-                effective_base_url.trim_end_matches('/'),
-                post.metadata.slug
-            );
+            let (post_url, content) = if post.is_external() {
+                (post.post_url(), post.metadata.description.clone())
+            } else {
+                let html_content = crate::generator::markdown::render_markdown(
+                    &post.content,
+                    self.config.math.enabled,
+                )?;
+                (
+                    format!(
+                        "{}/posts/{}.html",
+                        effective_base_url.trim_end_matches('/'),
+                        post.metadata.slug
+                    ),
+                    html_content,
+                )
+            };
 
+            let escaped_url = xml_escape(&post_url);
             let atom_entry = format!(
                 r#"  <entry>
     <title><![CDATA[{}]]></title>
@@ -803,11 +831,11 @@ Thank you!`);
     </author>
   </entry>"#,
                 post.metadata.title,
-                post_url,
-                post_url,
+                escaped_url,
+                escaped_url,
                 post.metadata.date.format("%Y-%m-%dT%H:%M:%S%z"),
                 &post.metadata.description,
-                html_content,
+                content,
                 self.config.blog.author
             );
 
@@ -1050,14 +1078,15 @@ Thank you!`);
                 )?;
 
                 // Calculate reading time (average 200 words per minute)
-                let word_count = post.content.split_whitespace().count();
-                let reading_time = (word_count / 200).max(1);
+                let reading_time = post.reading_time();
 
                 // Create a struct that includes both post data and rendered content
                 let post_data = serde_json::json!({
                     "metadata": post.metadata,
                     "content": html_content,
-                    "reading_time": reading_time
+                    "reading_time": reading_time,
+                    "post_url": post.post_url(),
+                    "is_external": post.is_external()
                 });
 
                 posts_with_content.push(post_data);
@@ -1092,5 +1121,33 @@ Thank you!`);
         let indexer = SearchIndexer::new(self.config.search.clone());
         indexer.generate_index(posts, &self.output_dir)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_xml_escape_ampersand_in_url() {
+        let url = "https://example.com/page?a=1&b=2";
+        let escaped = xml_escape(url);
+        assert_eq!(escaped, "https://example.com/page?a=1&amp;b=2");
+    }
+
+    #[test]
+    fn test_xml_escape_all_special_chars() {
+        let input = r#"<tag attr="val" & 'quote'>"#;
+        let escaped = xml_escape(input);
+        assert_eq!(
+            escaped,
+            "&lt;tag attr=&quot;val&quot; &amp; &apos;quote&apos;&gt;"
+        );
+    }
+
+    #[test]
+    fn test_xml_escape_no_special_chars() {
+        let url = "https://example.com/simple-path";
+        assert_eq!(xml_escape(url), url);
     }
 }

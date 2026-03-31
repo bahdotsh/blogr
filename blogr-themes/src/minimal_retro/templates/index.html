@@ -8,8 +8,14 @@
         {% for post in posts %}
         <article class="post-entry" data-post-id="{{ loop.index }}">
             <!-- Post Header -->
+            {% if post.is_external %}
+            <a href="{{ post.post_url }}" target="_blank" rel="noopener" class="post-entry-external-link" style="text-decoration: none; color: inherit; display: block;">
+            <header class="post-entry-header">
+                <h2 class="post-entry-title">{{ post.metadata.title }} ↗</h2>
+            {% else %}
             <header class="post-entry-header" onclick="togglePost({{ loop.index }})">
                 <h2 class="post-entry-title">{{ post.metadata.title }}</h2>
+            {% endif %}
                 
                 <div class="post-entry-meta">
                     <time class="post-date">{{ post.metadata.date | date(format="%b %d, %Y") }}</time>
@@ -38,6 +44,7 @@
                     <span class="expand-arrow">↓</span>
                 </div>
             </header>
+            {% if post.is_external %}</a>{% endif %}
 
             <!-- Expandable Content -->
             <div class="post-entry-content" id="post-content-{{ loop.index }}">
@@ -63,7 +70,11 @@
                     {% endif %}
 
                     <div class="post-actions">
-                        <a href="{{ url(path='posts/' ~ post.metadata.slug ~ '.html') | safe }}" class="permalink">permalink</a>
+                        {% if post.is_external %}
+                        <a href="{{ post.post_url }}" target="_blank" rel="noopener" class="permalink">external link ↗</a>
+                        {% else %}
+                        <a href="{{ url(path=post.post_url) | safe }}" class="permalink">permalink</a>
+                        {% endif %}
                         <button class="collapse-btn" onclick="togglePost({{ loop.index }})">collapse</button>
                     </div>
                 </footer>
@@ -231,15 +242,19 @@ function createPostElement(post, postId) {
         `;
     }
     
+    const isExternal = post.is_external || false;
+    const postUrl = post.post_url || `posts/${post.metadata.slug}.html`;
+
     article.innerHTML = `
-        <header class="post-entry-header" onclick="togglePost(${postId})">
-            <h2 class="post-entry-title">${post.metadata.title}</h2>
-            
+        ${isExternal ? '<a class="post-entry-external-link" style="text-decoration: none; color: inherit; display: block;">' : ''}
+        <header class="post-entry-header" ${isExternal ? '' : `onclick="togglePost(${postId})"`}>
+            <h2 class="post-entry-title">${post.metadata.title}${isExternal ? ' ↗' : ''}</h2>
+
             <div class="post-entry-meta">
                 <time class="post-date">${formattedDate}</time>
-                
+
                 ${post.metadata.author ? `<span class="post-author">${post.metadata.author}</span>` : ''}
-                
+
                 ${post.reading_time ? `<span class="reading-time">${post.reading_time}min</span>` : ''}
             </div>
 
@@ -250,10 +265,11 @@ function createPostElement(post, postId) {
                 <span class="expand-arrow">↓</span>
             </div>
         </header>
+        ${isExternal ? '</a>' : ''}
 
         <div class="post-entry-content" id="post-content-${postId}">
             ${post.metadata.description ? `<div class="post-description">${post.metadata.description}</div>` : ''}
-            
+
             <div class="post-full-content">
                 ${post.content}
             </div>
@@ -262,13 +278,30 @@ function createPostElement(post, postId) {
                 ${tagsFullHtml}
 
                 <div class="post-actions">
-                    <a href="posts/${post.metadata.slug}.html" class="permalink">permalink</a>
+                    <a class="permalink"></a>
                     <button class="collapse-btn" onclick="togglePost(${postId})">collapse</button>
                 </div>
             </footer>
         </div>
     `;
-    
+
+    // Set URLs via DOM API to avoid attribute injection
+    if (isExternal) {
+        const extLink = article.querySelector('.post-entry-external-link');
+        extLink.href = postUrl;
+        extLink.target = '_blank';
+        extLink.rel = 'noopener';
+        const link = article.querySelector('.permalink');
+        link.href = postUrl;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.textContent = 'external link ↗';
+    } else {
+        const link = article.querySelector('.permalink');
+        link.href = postUrl;
+        link.textContent = 'permalink';
+    }
+
     return article;
 }
 

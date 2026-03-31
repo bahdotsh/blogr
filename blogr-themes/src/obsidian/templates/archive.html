@@ -51,13 +51,24 @@
             <div class="nav-file">
                 <div class="nav-file-title" draggable="true">
                     <div class="nav-file-title-content">
+                        {% if post.is_external %}
                         <a
-                            href="{{ url(path='posts/' ~ post.metadata.slug ~ '.html') }}"
+                            href="{{ post.post_url }}"
+                            class="internal-link"
+                            data-tooltip-position="top"
+                            target="_blank" rel="noopener"
+                        >
+                            {{ post.metadata.title }} ↗
+                        </a>
+                        {% else %}
+                        <a
+                            href="{{ url(path=post.post_url) }}"
                             class="internal-link"
                             data-tooltip-position="top"
                         >
                             {{ post.metadata.title }}
                         </a>
+                        {% endif %}
                     </div>
                 </div>
                 <div class="nav-file-tags">
