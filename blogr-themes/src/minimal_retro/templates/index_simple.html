@@ -19,7 +19,11 @@
             <article class="post-card">
                 <div class="post-header">
                     <h4 class="post-title">
-                        <a href="{{ url(path='posts/' ~ post.metadata.slug ~ '.html') | safe }}">{{ post.metadata.title }}</a>
+                        {% if post.is_external %}
+                        <a href="{{ post.post_url }}" target="_blank" rel="noopener">{{ post.metadata.title }} ↗</a>
+                        {% else %}
+                        <a href="{{ url(path=post.post_url) | safe }}">{{ post.metadata.title }}</a>
+                        {% endif %}
                     </h4>
                     <time class="post-date" datetime="{{ post.metadata.date }}">
                         {{ post.metadata.date | date(format="%B %d, %Y") }}

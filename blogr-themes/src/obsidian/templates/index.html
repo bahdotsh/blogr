@@ -50,12 +50,22 @@
         <div class="markdown-embed">
             <div class="markdown-embed-title">
                 <div class="markdown-embed-link">
+                    {% if post.is_external %}
                     <a
-                        href="{{ url(path='posts/' ~ post.metadata.slug ~ '.html') }}"
+                        href="{{ post.post_url }}"
+                        class="internal-link"
+                        target="_blank" rel="noopener"
+                    >
+                        {{ post.metadata.title }} ↗
+                    </a>
+                    {% else %}
+                    <a
+                        href="{{ url(path=post.post_url) }}"
                         class="internal-link"
                     >
                         {{ post.metadata.title }}
                     </a>
+                    {% endif %}
                 </div>
             </div>
 

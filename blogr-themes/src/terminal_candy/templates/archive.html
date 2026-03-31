@@ -33,10 +33,17 @@
                         </time>
                         <div style="flex: 1;">
                             <h3 style="margin: 0; font-size: 1.1rem;">
-                                <a href="{{ url(path='posts/' ~ post.metadata.slug ~ '.html') | safe }}"
+                                {% if post.is_external %}
+                                <a href="{{ post.post_url }}" target="_blank" rel="noopener"
+                                   style="color: var(--color-pink); text-decoration: none;">
+                                    {{ post.metadata.title }} ↗
+                                </a>
+                                {% else %}
+                                <a href="{{ url(path=post.post_url) | safe }}"
                                    style="color: var(--color-pink); text-decoration: none;">
                                     {{ post.metadata.title }}
                                 </a>
+                                {% endif %}
                             </h3>
                             {% if post.metadata.description %}
                             <p style="color: var(--color-text-dim); margin: var(--spacing-xs) 0 0 0; font-size: 0.9rem;">
@@ -67,10 +74,17 @@
                     </time>
                     <div style="flex: 1;">
                         <h3 style="margin: 0; font-size: 1.1rem;">
-                            <a href="{{ url(path='posts/' ~ post.metadata.slug ~ '.html') | safe }}"
+                            {% if post.is_external %}
+                            <a href="{{ post.post_url }}" target="_blank" rel="noopener"
+                               style="color: var(--color-pink); text-decoration: none;">
+                                {{ post.metadata.title }} ↗
+                            </a>
+                            {% else %}
+                            <a href="{{ url(path=post.post_url) | safe }}"
                                style="color: var(--color-pink); text-decoration: none;">
                                 {{ post.metadata.title }}
                             </a>
+                            {% endif %}
                         </h3>
                         {% if post.metadata.description %}
                         <p style="color: var(--color-text-dim); margin: var(--spacing-xs) 0 0 0; font-size: 0.9rem;">

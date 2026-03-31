@@ -333,6 +333,7 @@ mod tests {
                 status: PostStatus::Published,
                 slug: "test-post".to_string(),
                 featured: false,
+                external_url: None,
             },
             content: "# Test Content\n\nThis is a test post with some **bold** text.".to_string(),
             file_path: PathBuf::from("test.md"),

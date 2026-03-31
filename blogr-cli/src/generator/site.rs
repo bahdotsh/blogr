@@ -328,6 +328,10 @@ Thank you!`);
     /// Generate individual post pages
     fn generate_post_pages(&self, posts: &[Post]) -> Result<()> {
         for post in posts {
+            // External posts don't get local HTML pages
+            if post.is_external() {
+                continue;
+            }
             let mut context = Context::new();
 
             // Add site config
@@ -501,14 +505,15 @@ Thank you!`);
             )?;
 
             // Calculate reading time (average 200 words per minute)
-            let word_count = post.content.split_whitespace().count();
-            let reading_time = (word_count / 200).max(1);
+            let reading_time = post.reading_time();
 
             // Create a struct that includes both post data and rendered content
             let post_data = serde_json::json!({
                 "metadata": post.metadata,
                 "content": html_content,
-                "reading_time": reading_time
+                "reading_time": reading_time,
+                "post_url": post.post_url(),
+                "is_external": post.is_external()
             });
 
             posts_with_content.push(post_data);
@@ -554,13 +559,14 @@ Thank you!`);
             )?;
 
             // Calculate reading time (average 200 words per minute)
-            let word_count = post.content.split_whitespace().count();
-            let reading_time = (word_count / 200).max(1);
+            let reading_time = post.reading_time();
 
             let post_data = serde_json::json!({
                 "metadata": post.metadata,
                 "content": html_content,
-                "reading_time": reading_time
+                "reading_time": reading_time,
+                "post_url": post.post_url(),
+                "is_external": post.is_external()
             });
 
             posts_with_content.push(post_data);
@@ -635,13 +641,14 @@ Thank you!`);
                 )?;
 
                 // Calculate reading time (average 200 words per minute)
-                let word_count = post.content.split_whitespace().count();
-                let reading_time = (word_count / 200).max(1);
+                let reading_time = post.reading_time();
 
                 let post_data = serde_json::json!({
                     "metadata": post.metadata,
                     "content": html_content,
-                    "reading_time": reading_time
+                    "reading_time": reading_time,
+                    "post_url": post.post_url(),
+                    "is_external": post.is_external()
                 });
 
                 posts_with_content.push(post_data);
@@ -705,11 +712,21 @@ Thank you!`);
             )?;
 
             // Create RSS item
-            let post_url = format!(
-                "{}/posts/{}.html",
-                effective_base_url.trim_end_matches('/'),
-                post.metadata.slug
-            );
+            let post_url = if post.is_external() {
+                post.metadata.external_url.clone().unwrap()
+            } else {
+                format!(
+                    "{}/posts/{}.html",
+                    effective_base_url.trim_end_matches('/'),
+                    post.metadata.slug
+                )
+            };
+
+            let description = if post.is_external() {
+                post.metadata.description.clone()
+            } else {
+                html_content
+            };
 
             let rss_item = format!(
                 r#"    <item>
@@ -723,7 +740,7 @@ Thank you!`);
                 post.metadata.title,
                 post_url,
                 post_url,
-                html_content,
+                description,
                 post.metadata.date.format("%a, %d %b %Y %H:%M:%S %z"),
                 self.config.blog.author
             );
@@ -784,11 +801,21 @@ Thank you!`);
             )?;
 
             // Create Atom entry
-            let post_url = format!(
-                "{}/posts/{}.html",
-                effective_base_url.trim_end_matches('/'),
-                post.metadata.slug
-            );
+            let post_url = if post.is_external() {
+                post.metadata.external_url.clone().unwrap()
+            } else {
+                format!(
+                    "{}/posts/{}.html",
+                    effective_base_url.trim_end_matches('/'),
+                    post.metadata.slug
+                )
+            };
+
+            let content = if post.is_external() {
+                post.metadata.description.clone()
+            } else {
+                html_content
+            };
 
             let atom_entry = format!(
                 r#"  <entry>
@@ -807,7 +834,7 @@ Thank you!`);
                 post_url,
                 post.metadata.date.format("%Y-%m-%dT%H:%M:%S%z"),
                 &post.metadata.description,
-                html_content,
+                content,
                 self.config.blog.author
             );
 
@@ -1050,14 +1077,15 @@ Thank you!`);
                 )?;
 
                 // Calculate reading time (average 200 words per minute)
-                let word_count = post.content.split_whitespace().count();
-                let reading_time = (word_count / 200).max(1);
+                let reading_time = post.reading_time();
 
                 // Create a struct that includes both post data and rendered content
                 let post_data = serde_json::json!({
                     "metadata": post.metadata,
                     "content": html_content,
-                    "reading_time": reading_time
+                    "reading_time": reading_time,
+                    "post_url": post.post_url(),
+                    "is_external": post.is_external()
                 });
 
                 posts_with_content.push(post_data);

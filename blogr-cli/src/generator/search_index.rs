@@ -91,32 +91,44 @@ impl SearchIndexer {
 
     /// Convert a post to a search document
     fn post_to_search_document(&self, post: &Post) -> Result<SearchDocument> {
-        // Convert markdown to plain text
-        let mut plain_text = markdown::markdown_to_text(&post.content);
-
-        // Apply stopword removal if enabled
-        if self.config.remove_stopwords {
-            plain_text = self.remove_stopwords(&plain_text);
-        }
-
-        // Truncate content if needed
-        let content = if plain_text.len() > self.config.max_content_chars {
-            let truncated = &plain_text[..self.config.max_content_chars];
-            // Find the last complete word
-            if let Some(last_space) = truncated.rfind(' ') {
-                format!("{}...", &truncated[..last_space])
-            } else {
-                format!("{}...", truncated)
-            }
+        // For external posts, use description as content
+        let (content, excerpt) = if post.is_external() {
+            (
+                post.metadata.description.clone(),
+                post.metadata.description.clone(),
+            )
         } else {
-            plain_text
+            // Convert markdown to plain text
+            let mut plain_text = markdown::markdown_to_text(&post.content);
+
+            // Apply stopword removal if enabled
+            if self.config.remove_stopwords {
+                plain_text = self.remove_stopwords(&plain_text);
+            }
+
+            // Truncate content if needed
+            let content = if plain_text.len() > self.config.max_content_chars {
+                let truncated = &plain_text[..self.config.max_content_chars];
+                // Find the last complete word
+                if let Some(last_space) = truncated.rfind(' ') {
+                    format!("{}...", &truncated[..last_space])
+                } else {
+                    format!("{}...", truncated)
+                }
+            } else {
+                plain_text
+            };
+
+            let excerpt = markdown::extract_excerpt(&post.content, self.config.excerpt_words);
+            (content, excerpt)
         };
 
-        // Generate excerpt
-        let excerpt = markdown::extract_excerpt(&post.content, self.config.excerpt_words);
-
         // Generate URL path
-        let url = format!("/posts/{}.html", post.metadata.slug);
+        let url = if post.is_external() {
+            post.metadata.external_url.clone().unwrap()
+        } else {
+            format!("/posts/{}.html", post.metadata.slug)
+        };
 
         Ok(SearchDocument {
             id: post.metadata.slug.clone(),
@@ -172,6 +184,7 @@ mod tests {
                 status: PostStatus::Published,
                 slug: "test-post".to_string(),
                 featured: false,
+                external_url: None,
             },
             content: "# Test Post\n\nThis is a test post with some content.".to_string(),
             file_path: PathBuf::from("test-post.md"),

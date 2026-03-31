@@ -8,8 +8,13 @@
         {% for post in posts %}
         <article class="post-entry" data-post-id="{{ loop.index }}">
             <!-- Post Header -->
+            {% if post.is_external %}
+            <header class="post-entry-header" onclick="window.open('{{ post.post_url }}', '_blank', 'noopener')">
+                <h2 class="post-entry-title">{{ post.metadata.title }} ↗</h2>
+            {% else %}
             <header class="post-entry-header" onclick="togglePost({{ loop.index }})">
                 <h2 class="post-entry-title">{{ post.metadata.title }}</h2>
+            {% endif %}
                 
                 <div class="post-entry-meta">
                     <time class="post-date">{{ post.metadata.date | date(format="%b %d, %Y") }}</time>
@@ -63,7 +68,11 @@
                     {% endif %}
 
                     <div class="post-actions">
-                        <a href="{{ url(path='posts/' ~ post.metadata.slug ~ '.html') | safe }}" class="permalink">permalink</a>
+                        {% if post.is_external %}
+                        <a href="{{ post.post_url }}" target="_blank" rel="noopener" class="permalink">external link ↗</a>
+                        {% else %}
+                        <a href="{{ url(path=post.post_url) | safe }}" class="permalink">permalink</a>
+                        {% endif %}
                         <button class="collapse-btn" onclick="togglePost({{ loop.index }})">collapse</button>
                     </div>
                 </footer>
@@ -231,9 +240,12 @@ function createPostElement(post, postId) {
         `;
     }
     
+    const isExternal = post.is_external || false;
+    const postUrl = post.post_url || `posts/${post.metadata.slug}.html`;
+
     article.innerHTML = `
-        <header class="post-entry-header" onclick="togglePost(${postId})">
-            <h2 class="post-entry-title">${post.metadata.title}</h2>
+        <header class="post-entry-header" onclick="${isExternal ? `window.open('${postUrl}', '_blank', 'noopener')` : `togglePost(${postId})`}">
+            <h2 class="post-entry-title">${post.metadata.title}${isExternal ? ' ↗' : ''}</h2>
             
             <div class="post-entry-meta">
                 <time class="post-date">${formattedDate}</time>
@@ -262,7 +274,10 @@ function createPostElement(post, postId) {
                 ${tagsFullHtml}
 
                 <div class="post-actions">
-                    <a href="posts/${post.metadata.slug}.html" class="permalink">permalink</a>
+                    ${isExternal
+                        ? `<a href="${postUrl}" target="_blank" rel="noopener" class="permalink">external link ↗</a>`
+                        : `<a href="${postUrl}" class="permalink">permalink</a>`
+                    }
                     <button class="collapse-btn" onclick="togglePost(${postId})">collapse</button>
                 </div>
             </footer>
