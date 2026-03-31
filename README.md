@@ -70,10 +70,11 @@ cargo install --path blogr-cli
 - Draft and published post management
 - Tag-based organization
 - Automatic slug generation
+- External post support (link to posts hosted elsewhere)
 
 **Site Generation**
 - Fast static site builds
-- Multiple themes: 7 built-in themes for blogs and personal sites
+- Multiple themes: 8 built-in themes for blogs and personal sites
 - Full-text search with MiniSearch integration
 - Syntax highlighting for code blocks
 - MathJax support for LaTeX math expressions (opt-in)
@@ -221,6 +222,8 @@ Your content goes here in **Markdown**.
 - `tags` - Array of tags for categorization
 - `status` - `"published"` or `"draft"`
 - `slug` - URL slug (auto-generated from title if not provided)
+- `featured` - Boolean, mark post as featured (default: false)
+- `external_url` - URL for external posts (appears in listings but links externally)
 
 ## Personal Website Content
 
@@ -257,7 +260,7 @@ Blogr's markdown parser converts `$...$` to `\(...\)` and `$$...$$` to `\[...\]`
 
 ## Themes
 
-Blogr comes with 7 built-in themes designed for different purposes:
+Blogr comes with 8 built-in themes designed for different purposes:
 
 **Blog Themes:**
 - **Minimal Retro** (default) - Clean, artistic design with retro aesthetics
@@ -348,10 +351,19 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
 
 ## Changelog
 
-### v0.4.0 (Latest)
+### v0.4.1 (Latest)
+
+**New Features:**
+- **External Post Support**: Create posts that link to external URLs, appearing in listings but redirecting to the original source
+- **Search Improvements**: Insert spaces at block boundaries in plain text extraction for better search indexing
+- **Newsletter API**: API endpoints for creating and sending newsletters
+- **Newsletter Hardening**: Cleanup, rate limiting, and validation improvements for the newsletter subsystem
+
+### v0.4.0
 
 **New Features:**
 - **Typewriter Theme**: Vintage typewriter-inspired theme for personal websites with nostalgic aesthetics
+- **Brutja Theme**: Minimal brutalist blog theme with pops of color
 - **Blog Link Support**: All personal website themes now support a `blog` link in social links
 - **Content.md Override**: Personal mode now uses `title` and `description` from `content.md` instead of `blogr.toml`
 - **Conditional Separators**: Typewriter theme displays separator lines only when sections are present
@@ -362,7 +374,7 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
 - Improved documentation for all themes
 
 **Themes:**
-- Blog themes: Minimal Retro, Obsidian, Terminal Candy
+- Blog themes: Minimal Retro, Obsidian, Terminal Candy, Brutja
 - Personal themes: Dark Minimal, Musashi, Slate Portfolio, Typewriter
 
 ### Previous Versions

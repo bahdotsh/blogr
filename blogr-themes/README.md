@@ -8,7 +8,7 @@ Blogr Themes is a library that provides the theme system for the Blogr static si
 
 ## Version
 
-**Current Version**: `0.4.0`
+**Current Version**: `0.4.1`
 
 This crate uses independent versioning from the main Blogr CLI to allow for theme-specific updates and improvements.
 
@@ -43,6 +43,12 @@ This crate uses independent versioning from the main Blogr CLI to allow for them
 - **Style**: Quirky terminal-inspired design with pastel colors
 - **Features**: Glitch effects, ASCII art, typewriter animations
 - **Best for**: Creative personal blogs, tech enthusiasts
+
+#### Brutja
+- **Version**: 1.0.0
+- **Style**: Minimal brutalist design with pops of color
+- **Features**: Bold typography, high contrast, clean layout
+- **Best for**: Minimalist blogs, design-forward content
 
 ### Personal Website Themes
 
@@ -85,7 +91,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-blogr-themes = "0.4.0"
+blogr-themes = "0.4.1"
 ```
 
 ### Basic Usage
@@ -132,11 +138,26 @@ let theme = manager.load_theme("obsidian")?;
 Each theme implements the `Theme` trait:
 
 ```rust
-pub trait Theme {
+pub trait Theme: Send + Sync {
     fn info(&self) -> ThemeInfo;
-    fn templates(&self) -> HashMap<String, String>;
+    fn templates(&self) -> ThemeTemplates;
     fn assets(&self) -> HashMap<String, Vec<u8>>;
     fn preview_tui_style(&self) -> ratatui::style::Style;
+}
+```
+
+### ThemeTemplates
+
+Templates are built using a builder pattern:
+
+```rust
+pub struct ThemeTemplates {
+    templates: Vec<(&'static str, &'static str)>,
+}
+
+impl ThemeTemplates {
+    pub fn new(base_template_name: &'static str, base_template: &'static str) -> Self;
+    pub fn with_template(self, name: &'static str, template: &'static str) -> Self;
 }
 ```
 
@@ -149,6 +170,7 @@ pub struct ThemeInfo {
     pub author: String,
     pub description: String,
     pub config_schema: HashMap<String, ConfigOption>,
+    pub site_type: SiteType,  // Blog or Personal
 }
 ```
 
@@ -158,8 +180,7 @@ Themes can define configurable options:
 
 ```rust
 pub struct ConfigOption {
-    pub option_type: String,    // "string", "boolean", "number"
-    pub default: String,        // Default value
+    pub value: toml::Value,     // Configuration value (string, bool, integer, float, etc.)
     pub description: String,    // Help text
 }
 ```
@@ -215,7 +236,7 @@ Built-in template functions:
 ### 1. Implement the Theme Trait
 
 ```rust
-use blogr_themes::{Theme, ThemeInfo, ConfigOption};
+use blogr_themes::{Theme, ThemeInfo, ThemeTemplates, ConfigOption, SiteType};
 use std::collections::HashMap;
 
 pub struct MyCustomTheme;
@@ -225,8 +246,7 @@ impl Theme for MyCustomTheme {
         let mut schema = HashMap::new();
         
         schema.insert("primary_color".to_string(), ConfigOption {
-            option_type: "string".to_string(),
-            default: "#007acc".to_string(),
+            value: toml::Value::String("#007acc".to_string()),
             description: "Primary theme color".to_string(),
         });
 
@@ -236,17 +256,17 @@ impl Theme for MyCustomTheme {
             author: "Your Name".to_string(),
             description: "A custom theme for my blog".to_string(),
             config_schema: schema,
+            site_type: SiteType::Blog,
         }
     }
 
-    fn templates(&self) -> HashMap<String, String> {
-        let mut templates = HashMap::new();
-        templates.insert(
-            "base.html".to_string(),
-            include_str!("templates/base.html").to_string(),
-        );
-        // Add more templates...
-        templates
+    fn templates(&self) -> ThemeTemplates {
+        ThemeTemplates::new("base.html", include_str!("templates/base.html"))
+            .with_template("index.html", include_str!("templates/index.html"))
+            .with_template("post.html", include_str!("templates/post.html"))
+            .with_template("archive.html", include_str!("templates/archive.html"))
+            .with_template("tags.html", include_str!("templates/tags.html"))
+            .with_template("tag.html", include_str!("templates/tag.html"))
     }
 
     fn assets(&self) -> HashMap<String, Vec<u8>> {
@@ -352,8 +372,15 @@ See the main [CONTRIBUTING.md](../CONTRIBUTING.md) for detailed guidelines.
 
 ## Changelog
 
+### v0.4.1
+- **NEW**: External post support — posts can link to external URLs
+- **IMPROVED**: Search indexing with better plain text extraction
+- **NEW**: Newsletter API endpoints for creating and sending newsletters
+- **IMPROVED**: Newsletter hardening with cleanup, rate limiting, and validation
+
 ### v0.4.0
 - **NEW**: Typewriter theme for personal websites with vintage aesthetics
+- **NEW**: Brutja theme — minimal brutalist blog theme with pops of color
 - **NEW**: Blog link support in all personal website themes (Dark Minimal, Musashi, Slate Portfolio, Typewriter)
 - **IMPROVED**: Personal mode now uses title and description from content.md instead of blogr.toml
 - **IMPROVED**: Conditional separator lines in Typewriter theme based on section presence

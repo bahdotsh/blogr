@@ -69,6 +69,7 @@ blogr build
 ### Core Commands
 
 - `blogr init [name]` - Initialize a new blog project
+- `blogr init --personal [name]` - Initialize a personal website
 - `blogr new <title>` - Create a new blog post
 - `blogr build` - Build the static site
 - `blogr serve` - Start development server with live reload
@@ -82,14 +83,40 @@ blogr build
 
 ### Configuration
 
-- `blogr config` - Interactive configuration editor (TUI)
+- `blogr config edit` - Interactive configuration editor (TUI)
+- `blogr config get <key>` - Get a configuration value
+- `blogr config set <key> <value>` - Set a configuration value
+- `blogr config domain` - Domain configuration commands
 - `blogr theme list` - List available themes
 - `blogr theme set <name>` - Change theme
+- `blogr theme info <name>` - Show theme details
+- `blogr theme preview <name>` - Preview theme in TUI
 
 ### Project Management
 
 - `blogr project info` - Show project information
+- `blogr project check` - Validate project structure
 - `blogr project clean` - Clean build artifacts
+- `blogr project stats` - Show project statistics
+
+### Newsletter
+
+- `blogr newsletter fetch-subscribers` - Fetch subscribers from email inbox
+- `blogr newsletter approve` - Launch subscriber approval UI
+- `blogr newsletter list` - List all subscribers
+- `blogr newsletter remove <email>` - Remove a subscriber
+- `blogr newsletter export` - Export subscribers to CSV/JSON
+- `blogr newsletter send-latest` - Send newsletter with latest post
+- `blogr newsletter send-custom` - Send custom newsletter
+- `blogr newsletter draft-latest` - Preview latest post newsletter
+- `blogr newsletter draft-custom` - Preview custom newsletter
+- `blogr newsletter test <email>` - Send test email
+- `blogr newsletter import` - Import subscribers from external services
+- `blogr newsletter cleanup` - Clean up old send data
+- `blogr newsletter tag` - Tag a subscriber
+- `blogr newsletter tags` - List all tags
+- `blogr newsletter plugin` - Plugin management
+- `blogr newsletter api-server` - Start REST API server
 
 ## Configuration
 
@@ -115,10 +142,19 @@ repository = "yourblog"
 
 ## Themes
 
-Blogr comes with built-in themes:
+Blogr comes with 8 built-in themes:
 
-- **minimal_retro** - Clean, artistic design with retro typography
+**Blog Themes:**
+- **minimal_retro** - Clean, artistic design with retro typography (default)
 - **obsidian** - Obsidian-inspired dark theme with modern aesthetics
+- **terminal_candy** - Quirky terminal-inspired theme with pastel colors
+- **brutja** - Minimal brutalist theme with pops of color
+
+**Personal Website Themes:**
+- **dark_minimal** - Dark minimalist with cyberpunk aesthetics (default)
+- **musashi** - Dynamic modern theme with smooth animations
+- **slate_portfolio** - Glassmorphic professional portfolio theme
+- **typewriter** - Vintage typewriter-inspired aesthetics
 
 ### Theme Configuration
 
@@ -135,12 +171,12 @@ accent_color = "#7c3aed"
 ```
 my-blog/
 ├── blogr.toml          # Configuration
-├── content/            # Blog posts
-│   └── posts/
-│       └── my-post.md
+├── posts/              # Blog posts
+│   └── my-post.md
 ├── static/             # Static assets
 │   ├── images/
-│   └── css/
+│   ├── css/
+│   └── js/
 └── dist/              # Generated site
 ```
 
@@ -158,11 +194,14 @@ Blogr supports enhanced Markdown with:
 ```yaml
 ---
 title: "My Post Title"
-date: 2024-01-15
+date: "2024-01-15"
 author: "Your Name"
 description: "Post description for SEO"
 tags: ["rust", "web", "blogging"]
-draft: false
+status: "published"
+slug: "my-post-title"
+featured: false
+external_url: ""  # Optional: link to an external post
 ---
 
 Your content here...

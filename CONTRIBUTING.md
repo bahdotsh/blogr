@@ -87,24 +87,35 @@ blogr/
 ├── blogr-cli/              # Main CLI application
 │   ├── src/
 │   │   ├── main.rs         # CLI entry point
-│   │   ├── cli/            # Command implementations
+│   │   ├── commands/       # CLI subcommand implementations
 │   │   ├── tui/            # Terminal user interface
 │   │   ├── generator/      # Static site generation
-│   │   ├── config/         # Configuration management
-│   │   └── content/        # Content management
+│   │   ├── newsletter/     # Email newsletter subsystem
+│   │   ├── config.rs       # Configuration parsing
+│   │   ├── content.rs      # Post/content models
+│   │   ├── project.rs      # Project discovery/validation
+│   │   └── utils.rs        # Shared utilities
 │   └── templates/          # Project initialization templates
 ├── blogr-themes/           # Themes crate
 │   └── src/
-│       ├── lib.rs          # Theme registry
-│       └── minimal_retro/  # Built-in theme
+│       ├── lib.rs          # Theme registry & trait
+│       ├── minimal_retro/  # Minimal Retro theme (blog)
+│       ├── obsidian/       # Obsidian theme (blog)
+│       ├── terminal_candy/ # Terminal Candy theme (blog)
+│       ├── brutja/         # Brutja theme (blog)
+│       ├── dark_minimal/   # Dark Minimal theme (personal)
+│       ├── musashi/        # Musashi theme (personal)
+│       ├── slate_portfolio/# Slate Portfolio theme (personal)
+│       └── typewriter/     # Typewriter theme (personal)
 └── README.md
 ```
 
 ### Key Components
 
-- **CLI Commands** (`blogr-cli/src/cli/`): Command-line interface implementations
+- **CLI Commands** (`blogr-cli/src/commands/`): Command-line interface implementations
 - **TUI System** (`blogr-cli/src/tui/`): Terminal user interface components
 - **Site Generator** (`blogr-cli/src/generator/`): Static site generation logic
+- **Newsletter** (`blogr-cli/src/newsletter/`): Email newsletter subsystem
 - **Theme System** (`blogr-themes/src/`): Theme architecture and built-in themes
 
 ## Contributing Areas
@@ -314,13 +325,13 @@ All checks must pass before merging.
 
 2. **Implement the Theme trait**:
    ```rust
-   use crate::{Theme, ThemeInfo};
+   use crate::{Theme, ThemeInfo, ThemeTemplates, SiteType};
    
    pub struct YourTheme;
    
    impl Theme for YourTheme {
        fn info(&self) -> ThemeInfo { /* ... */ }
-       fn templates(&self) -> HashMap<String, String> { /* ... */ }
+       fn templates(&self) -> ThemeTemplates { /* ... */ }
        fn assets(&self) -> HashMap<String, Vec<u8>> { /* ... */ }
        fn preview_tui_style(&self) -> ratatui::style::Style { /* ... */ }
    }
