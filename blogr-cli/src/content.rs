@@ -120,7 +120,10 @@ impl Post {
         self.metadata.external_url.is_some()
     }
 
-    /// Get the URL for this post - external URL if set, otherwise local path
+    /// Get the URL for this post. Returns an absolute URL for external posts,
+    /// or a relative path (e.g. "posts/slug.html") for local posts. Callers
+    /// rendering into templates should apply the `url()` helper to local paths
+    /// but use external URLs as-is.
     pub fn post_url(&self) -> String {
         match &self.metadata.external_url {
             Some(url) => url.clone(),
@@ -545,5 +548,34 @@ Some content."#;
             Some("https://example.com/article".to_string()),
         )
         .is_ok());
+    }
+
+    #[test]
+    fn test_post_url_local_vs_external() {
+        let local = Post::new(
+            "Local Post".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            Some("my-local-post".to_string()),
+            PostStatus::Published,
+            None,
+        )
+        .unwrap();
+        assert_eq!(local.post_url(), "posts/my-local-post.html");
+        assert!(!local.is_external());
+
+        let external = Post::new(
+            "External Post".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            None,
+            PostStatus::Published,
+            Some("https://example.com/article?a=1&b=2".to_string()),
+        )
+        .unwrap();
+        assert_eq!(external.post_url(), "https://example.com/article?a=1&b=2");
+        assert!(external.is_external());
     }
 }

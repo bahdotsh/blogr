@@ -15,6 +15,15 @@ use tera::{Context, Tera};
 const EMBEDDED_SEARCH_JS: &str = include_str!("../../static/js/search.js");
 const EMBEDDED_MINISEARCH_JS: &str = include_str!("../../static/js/vendor/minisearch.min.js");
 
+/// Escape a string for use in XML elements and attributes
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 /// Static site generator
 pub struct SiteBuilder {
     /// Project reference
@@ -723,6 +732,7 @@ Thank you!`);
                 )
             };
 
+            let escaped_url = xml_escape(&post_url);
             let rss_item = format!(
                 r#"    <item>
       <title><![CDATA[{}]]></title>
@@ -733,8 +743,8 @@ Thank you!`);
       <author>{}</author>
     </item>"#,
                 post.metadata.title,
-                post_url,
-                post_url,
+                escaped_url,
+                escaped_url,
                 description,
                 post.metadata.date.format("%a, %d %b %Y %H:%M:%S %z"),
                 self.config.blog.author
@@ -807,6 +817,7 @@ Thank you!`);
                 )
             };
 
+            let escaped_url = xml_escape(&post_url);
             let atom_entry = format!(
                 r#"  <entry>
     <title><![CDATA[{}]]></title>
@@ -820,8 +831,8 @@ Thank you!`);
     </author>
   </entry>"#,
                 post.metadata.title,
-                post_url,
-                post_url,
+                escaped_url,
+                escaped_url,
                 post.metadata.date.format("%Y-%m-%dT%H:%M:%S%z"),
                 &post.metadata.description,
                 content,
@@ -1110,5 +1121,33 @@ Thank you!`);
         let indexer = SearchIndexer::new(self.config.search.clone());
         indexer.generate_index(posts, &self.output_dir)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_xml_escape_ampersand_in_url() {
+        let url = "https://example.com/page?a=1&b=2";
+        let escaped = xml_escape(url);
+        assert_eq!(escaped, "https://example.com/page?a=1&amp;b=2");
+    }
+
+    #[test]
+    fn test_xml_escape_all_special_chars() {
+        let input = r#"<tag attr="val" & 'quote'>"#;
+        let escaped = xml_escape(input);
+        assert_eq!(
+            escaped,
+            "&lt;tag attr=&quot;val&quot; &amp; &apos;quote&apos;&gt;"
+        );
+    }
+
+    #[test]
+    fn test_xml_escape_no_special_chars() {
+        let url = "https://example.com/simple-path";
+        assert_eq!(xml_escape(url), url);
     }
 }
