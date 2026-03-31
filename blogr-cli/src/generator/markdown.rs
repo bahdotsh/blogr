@@ -124,6 +124,12 @@ pub fn markdown_to_text(markdown: &str) -> String {
         match event {
             Event::Text(t) | Event::Code(t) => text.push_str(&t),
             Event::SoftBreak | Event::HardBreak => text.push(' '),
+            Event::End(
+                TagEnd::Paragraph
+                | TagEnd::Heading(_)
+                | TagEnd::Item
+                | TagEnd::BlockQuote(_),
+            ) => text.push(' '),
             _ => {}
         }
     }
