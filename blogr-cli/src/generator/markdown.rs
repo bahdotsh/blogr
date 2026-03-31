@@ -124,11 +124,20 @@ pub fn markdown_to_text(markdown: &str) -> String {
         match event {
             Event::Text(t) | Event::Code(t) => text.push_str(&t),
             Event::SoftBreak | Event::HardBreak => text.push(' '),
+            Event::End(
+                TagEnd::Paragraph
+                | TagEnd::Heading(_)
+                | TagEnd::Item
+                | TagEnd::BlockQuote(_)
+                | TagEnd::Table
+                | TagEnd::TableCell
+                | TagEnd::FootnoteDefinition,
+            ) => text.push(' '),
             _ => {}
         }
     }
 
-    text
+    text.trim().to_string()
 }
 
 /// Extract excerpt from markdown (first paragraph or first N words)
@@ -260,6 +269,67 @@ mod tests {
             html.contains("\\[\\sum_{i=1}^{n} i\\]"),
             "Expected display math delimiters, got: {}",
             html
+        );
+    }
+
+    #[test]
+    fn test_markdown_to_text_paragraph_boundaries() {
+        let md = "First paragraph.\n\nSecond paragraph.";
+        let text = markdown_to_text(md);
+        assert_eq!(text, "First paragraph. Second paragraph.");
+    }
+
+    #[test]
+    fn test_markdown_to_text_heading_boundary() {
+        let md = "# Heading\n\nParagraph text.";
+        let text = markdown_to_text(md);
+        assert_eq!(text, "Heading Paragraph text.");
+    }
+
+    #[test]
+    fn test_markdown_to_text_list_items() {
+        let md = "- alpha\n- beta\n- gamma";
+        let text = markdown_to_text(md);
+        assert_eq!(text, "alpha beta gamma");
+    }
+
+    #[test]
+    fn test_markdown_to_text_blockquote() {
+        let md = "> quoted text\n\nNormal text.";
+        let text = markdown_to_text(md);
+        // BlockQuote contains a Paragraph, so both End events emit a space;
+        // callers use split_whitespace() which collapses this.
+        let words: Vec<&str> = text.split_whitespace().collect();
+        assert_eq!(words.join(" "), "quoted text Normal text.");
+    }
+
+    #[test]
+    fn test_markdown_to_text_no_trailing_whitespace() {
+        let md = "Just a paragraph.";
+        let text = markdown_to_text(md);
+        assert_eq!(text, "Just a paragraph.");
+        assert!(!text.starts_with(' '));
+        assert!(!text.ends_with(' '));
+    }
+
+    #[test]
+    fn test_markdown_to_text_nested_blockquote_in_list() {
+        let md = "- item one\n- > quoted item\n- item three";
+        let text = markdown_to_text(md);
+        assert!(
+            text.contains("item one"),
+            "Expected 'item one' in: {}",
+            text
+        );
+        assert!(
+            text.contains("quoted item"),
+            "Expected 'quoted item' in: {}",
+            text
+        );
+        assert!(
+            !text.contains("oneq") && !text.contains("itemitem"),
+            "Words should not merge: {}",
+            text
         );
     }
 }
