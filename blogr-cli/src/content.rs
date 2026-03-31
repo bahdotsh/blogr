@@ -85,6 +85,11 @@ impl Post {
                     url
                 ));
             }
+            // Ensure the URL has a host (not just a bare scheme)
+            let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or("");
+            if after_scheme.is_empty() || after_scheme == "/" {
+                return Err(anyhow!("external_url must include a host, got: {}", url));
+            }
         }
 
         let slug = slug.unwrap_or_else(|| Self::generate_slug(&title));
@@ -521,6 +526,30 @@ Some content."#;
             None,
             PostStatus::Published,
             Some("javascript:alert(1)".to_string()),
+        );
+        assert!(result.is_err());
+
+        // Bare scheme with no host
+        let result = Post::new(
+            "Bare Scheme".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            None,
+            PostStatus::Published,
+            Some("https://".to_string()),
+        );
+        assert!(result.is_err());
+
+        // Bare scheme with only a trailing slash
+        let result = Post::new(
+            "Bare Scheme Slash".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            None,
+            PostStatus::Published,
+            Some("https:///".to_string()),
         );
         assert!(result.is_err());
     }

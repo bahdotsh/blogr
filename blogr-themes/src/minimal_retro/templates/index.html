@@ -244,14 +244,14 @@ function createPostElement(post, postId) {
     const postUrl = post.post_url || `posts/${post.metadata.slug}.html`;
 
     article.innerHTML = `
-        <header class="post-entry-header" ${isExternal ? `data-external-url="${encodeURI(postUrl)}" onclick="window.open(this.dataset.externalUrl, '_blank', 'noopener')"` : `onclick="togglePost(${postId})"`}>
+        <header class="post-entry-header" ${isExternal ? '' : `onclick="togglePost(${postId})"`}>
             <h2 class="post-entry-title">${post.metadata.title}${isExternal ? ' ↗' : ''}</h2>
-            
+
             <div class="post-entry-meta">
                 <time class="post-date">${formattedDate}</time>
-                
+
                 ${post.metadata.author ? `<span class="post-author">${post.metadata.author}</span>` : ''}
-                
+
                 ${post.reading_time ? `<span class="reading-time">${post.reading_time}min</span>` : ''}
             </div>
 
@@ -265,7 +265,7 @@ function createPostElement(post, postId) {
 
         <div class="post-entry-content" id="post-content-${postId}">
             ${post.metadata.description ? `<div class="post-description">${post.metadata.description}</div>` : ''}
-            
+
             <div class="post-full-content">
                 ${post.content}
             </div>
@@ -274,16 +274,29 @@ function createPostElement(post, postId) {
                 ${tagsFullHtml}
 
                 <div class="post-actions">
-                    ${isExternal
-                        ? `<a href="${encodeURI(postUrl)}" target="_blank" rel="noopener" class="permalink">external link ↗</a>`
-                        : `<a href="${postUrl}" class="permalink">permalink</a>`
-                    }
+                    <a class="permalink"></a>
                     <button class="collapse-btn" onclick="togglePost(${postId})">collapse</button>
                 </div>
             </footer>
         </div>
     `;
-    
+
+    // Set external URL via DOM API to avoid attribute injection
+    if (isExternal) {
+        const header = article.querySelector('.post-entry-header');
+        header.dataset.externalUrl = postUrl;
+        header.onclick = function() { window.open(this.dataset.externalUrl, '_blank', 'noopener'); };
+        const link = article.querySelector('.permalink');
+        link.href = postUrl;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.textContent = 'external link ↗';
+    } else {
+        const link = article.querySelector('.permalink');
+        link.href = postUrl;
+        link.textContent = 'permalink';
+    }
+
     return article;
 }
 
