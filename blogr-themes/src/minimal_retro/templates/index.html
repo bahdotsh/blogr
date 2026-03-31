@@ -9,7 +9,8 @@
         <article class="post-entry" data-post-id="{{ loop.index }}">
             <!-- Post Header -->
             {% if post.is_external %}
-            <header class="post-entry-header" data-external-url="{{ post.post_url }}" onclick="window.open(this.dataset.externalUrl, '_blank', 'noopener')">
+            <a href="{{ post.post_url }}" target="_blank" rel="noopener" class="post-entry-external-link" style="text-decoration: none; color: inherit; display: block;">
+            <header class="post-entry-header">
                 <h2 class="post-entry-title">{{ post.metadata.title }} ↗</h2>
             {% else %}
             <header class="post-entry-header" onclick="togglePost({{ loop.index }})">
@@ -43,6 +44,7 @@
                     <span class="expand-arrow">↓</span>
                 </div>
             </header>
+            {% if post.is_external %}</a>{% endif %}
 
             <!-- Expandable Content -->
             <div class="post-entry-content" id="post-content-{{ loop.index }}">
@@ -244,6 +246,7 @@ function createPostElement(post, postId) {
     const postUrl = post.post_url || `posts/${post.metadata.slug}.html`;
 
     article.innerHTML = `
+        ${isExternal ? '<a class="post-entry-external-link" style="text-decoration: none; color: inherit; display: block;">' : ''}
         <header class="post-entry-header" ${isExternal ? '' : `onclick="togglePost(${postId})"`}>
             <h2 class="post-entry-title">${post.metadata.title}${isExternal ? ' ↗' : ''}</h2>
 
@@ -262,6 +265,7 @@ function createPostElement(post, postId) {
                 <span class="expand-arrow">↓</span>
             </div>
         </header>
+        ${isExternal ? '</a>' : ''}
 
         <div class="post-entry-content" id="post-content-${postId}">
             ${post.metadata.description ? `<div class="post-description">${post.metadata.description}</div>` : ''}
@@ -281,11 +285,12 @@ function createPostElement(post, postId) {
         </div>
     `;
 
-    // Set external URL via DOM API to avoid attribute injection
+    // Set URLs via DOM API to avoid attribute injection
     if (isExternal) {
-        const header = article.querySelector('.post-entry-header');
-        header.dataset.externalUrl = postUrl;
-        header.onclick = function() { window.open(this.dataset.externalUrl, '_blank', 'noopener'); };
+        const extLink = article.querySelector('.post-entry-external-link');
+        extLink.href = postUrl;
+        extLink.target = '_blank';
+        extLink.rel = 'noopener';
         const link = article.querySelector('.permalink');
         link.href = postUrl;
         link.target = '_blank';
