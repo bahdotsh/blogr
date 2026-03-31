@@ -125,7 +125,7 @@ impl SearchIndexer {
 
         // Generate URL path
         let url = if post.is_external() {
-            post.metadata.external_url.clone().unwrap()
+            post.post_url()
         } else {
             format!("/posts/{}.html", post.metadata.slug)
         };

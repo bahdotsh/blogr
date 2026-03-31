@@ -42,7 +42,7 @@ pub async fn handle_new(
         slug,
         status,
         external_url,
-    );
+    )?;
 
     // Save the post
     let post_manager = PostManager::new(project.posts_dir());

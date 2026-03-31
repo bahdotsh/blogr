@@ -76,7 +76,17 @@ impl Post {
         slug: Option<String>,
         status: PostStatus,
         external_url: Option<String>,
-    ) -> Self {
+    ) -> Result<Self> {
+        // Validate external URL if provided
+        if let Some(ref url) = external_url {
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(anyhow!(
+                    "external_url must start with http:// or https://, got: {}",
+                    url
+                ));
+            }
+        }
+
         let slug = slug.unwrap_or_else(|| Self::generate_slug(&title));
         let description = description.unwrap_or_else(|| format!("A post about {}", title));
 
@@ -98,11 +108,11 @@ impl Post {
             format!("# {}\n\nYour content goes here...", title)
         };
 
-        Self {
+        Ok(Self {
             metadata,
             content,
             file_path: PathBuf::from(format!("{}.md", slug)),
-        }
+        })
     }
 
     /// Check if this is an external post (links to external URL)
@@ -420,7 +430,8 @@ This is the body of the post."#;
             None,
             PostStatus::Draft,
             None,
-        );
+        )
+        .unwrap();
 
         let file_path = temp_dir.path().join("test-post.md");
         post.save_to_file(&file_path).unwrap();
@@ -445,7 +456,8 @@ This is the body of the post."#;
             None,
             PostStatus::Published,
             Some(url.clone()),
-        );
+        )
+        .unwrap();
 
         assert!(post.is_external());
         assert_eq!(post.post_url(), url);
@@ -483,5 +495,55 @@ Some content."#;
         assert!(!post.is_external());
         assert_eq!(post.metadata.external_url, None);
         assert_eq!(post.post_url(), "posts/old-post.html");
+    }
+
+    #[test]
+    fn test_external_url_validation_rejects_invalid() {
+        let result = Post::new(
+            "Bad Link".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            None,
+            PostStatus::Published,
+            Some("not-a-url".to_string()),
+        );
+        assert!(result.is_err());
+
+        let result = Post::new(
+            "JS Injection".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            None,
+            PostStatus::Published,
+            Some("javascript:alert(1)".to_string()),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_external_url_validation_accepts_valid() {
+        assert!(Post::new(
+            "HTTP".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            None,
+            PostStatus::Published,
+            Some("http://example.com".to_string()),
+        )
+        .is_ok());
+
+        assert!(Post::new(
+            "HTTPS".to_string(),
+            "Author".to_string(),
+            None,
+            vec![],
+            None,
+            PostStatus::Published,
+            Some("https://example.com/article".to_string()),
+        )
+        .is_ok());
     }
 }

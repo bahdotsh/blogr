@@ -705,27 +705,22 @@ Thank you!`);
         let mut rss_items = Vec::new();
 
         for post in recent_posts {
-            // Convert markdown to HTML for RSS content
-            let html_content = crate::generator::markdown::render_markdown(
-                &post.content,
-                self.config.math.enabled,
-            )?;
-
             // Create RSS item
-            let post_url = if post.is_external() {
-                post.metadata.external_url.clone().unwrap()
+            let (post_url, description) = if post.is_external() {
+                (post.post_url(), post.metadata.description.clone())
             } else {
-                format!(
-                    "{}/posts/{}.html",
-                    effective_base_url.trim_end_matches('/'),
-                    post.metadata.slug
+                let html_content = crate::generator::markdown::render_markdown(
+                    &post.content,
+                    self.config.math.enabled,
+                )?;
+                (
+                    format!(
+                        "{}/posts/{}.html",
+                        effective_base_url.trim_end_matches('/'),
+                        post.metadata.slug
+                    ),
+                    html_content,
                 )
-            };
-
-            let description = if post.is_external() {
-                post.metadata.description.clone()
-            } else {
-                html_content
             };
 
             let rss_item = format!(
@@ -794,27 +789,22 @@ Thank you!`);
         let mut atom_entries = Vec::new();
 
         for post in recent_posts {
-            // Convert markdown to HTML for Atom content
-            let html_content = crate::generator::markdown::render_markdown(
-                &post.content,
-                self.config.math.enabled,
-            )?;
-
             // Create Atom entry
-            let post_url = if post.is_external() {
-                post.metadata.external_url.clone().unwrap()
+            let (post_url, content) = if post.is_external() {
+                (post.post_url(), post.metadata.description.clone())
             } else {
-                format!(
-                    "{}/posts/{}.html",
-                    effective_base_url.trim_end_matches('/'),
-                    post.metadata.slug
+                let html_content = crate::generator::markdown::render_markdown(
+                    &post.content,
+                    self.config.math.enabled,
+                )?;
+                (
+                    format!(
+                        "{}/posts/{}.html",
+                        effective_base_url.trim_end_matches('/'),
+                        post.metadata.slug
+                    ),
+                    html_content,
                 )
-            };
-
-            let content = if post.is_external() {
-                post.metadata.description.clone()
-            } else {
-                html_content
             };
 
             let atom_entry = format!(

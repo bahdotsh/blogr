@@ -9,7 +9,7 @@
         <article class="post-entry" data-post-id="{{ loop.index }}">
             <!-- Post Header -->
             {% if post.is_external %}
-            <header class="post-entry-header" onclick="window.open('{{ post.post_url }}', '_blank', 'noopener')">
+            <header class="post-entry-header" data-external-url="{{ post.post_url }}" onclick="window.open(this.dataset.externalUrl, '_blank', 'noopener')">
                 <h2 class="post-entry-title">{{ post.metadata.title }} ↗</h2>
             {% else %}
             <header class="post-entry-header" onclick="togglePost({{ loop.index }})">
@@ -244,7 +244,7 @@ function createPostElement(post, postId) {
     const postUrl = post.post_url || `posts/${post.metadata.slug}.html`;
 
     article.innerHTML = `
-        <header class="post-entry-header" onclick="${isExternal ? `window.open('${postUrl}', '_blank', 'noopener')` : `togglePost(${postId})`}">
+        <header class="post-entry-header" ${isExternal ? `data-external-url="${encodeURI(postUrl)}" onclick="window.open(this.dataset.externalUrl, '_blank', 'noopener')"` : `onclick="togglePost(${postId})"`}>
             <h2 class="post-entry-title">${post.metadata.title}${isExternal ? ' ↗' : ''}</h2>
             
             <div class="post-entry-meta">
@@ -275,7 +275,7 @@ function createPostElement(post, postId) {
 
                 <div class="post-actions">
                     ${isExternal
-                        ? `<a href="${postUrl}" target="_blank" rel="noopener" class="permalink">external link ↗</a>`
+                        ? `<a href="${encodeURI(postUrl)}" target="_blank" rel="noopener" class="permalink">external link ↗</a>`
                         : `<a href="${postUrl}" class="permalink">permalink</a>`
                     }
                     <button class="collapse-btn" onclick="togglePost(${postId})">collapse</button>
