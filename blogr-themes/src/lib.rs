@@ -58,6 +58,12 @@ impl ThemeInfo {
             self.description.clone(),
         ]
     }
+
+    /// Canonical slug for use in config files: lowercase, hyphen-separated.
+    #[must_use]
+    pub fn slug(&self) -> String {
+        normalize_theme_name(&self.name).replace(' ', "-")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,16 +120,19 @@ pub fn get_all_themes() -> Vec<Box<dyn Theme>> {
     ]
 }
 
+/// Normalize a theme name for comparison by lowercasing and replacing hyphens/underscores with spaces.
+/// This allows `"minimal-retro"`, `"Minimal Retro"`, and `"minimal_retro"` to all match.
 #[must_use]
-pub fn get_theme(name: &str) -> Option<Box<dyn Theme>> {
-    get_all_themes()
-        .into_iter()
-        .find(|theme| theme.info().name.to_lowercase() == name.to_lowercase())
+fn normalize_theme_name(name: &str) -> String {
+    name.to_lowercase().replace(['-', '_'], " ")
 }
 
 #[must_use]
-pub fn get_theme_by_name(name: &str) -> Option<Box<dyn Theme>> {
-    get_theme(name)
+pub fn get_theme(name: &str) -> Option<Box<dyn Theme>> {
+    let needle = normalize_theme_name(name);
+    get_all_themes()
+        .into_iter()
+        .find(|theme| normalize_theme_name(&theme.info().name) == needle)
 }
 
 #[cfg(test)]
@@ -132,7 +141,7 @@ mod test {
     use crate::ThemeTemplates;
     use std::collections::{HashMap, HashSet};
 
-    use crate::get_all_themes;
+    use crate::{get_all_themes, get_theme};
 
     #[test]
     fn themes_have_unique_names() {
@@ -214,5 +223,65 @@ mod test {
                 )
             }
         });
+    }
+
+    #[test]
+    fn themes_have_unique_slugs() {
+        let slugs: Vec<String> = get_all_themes()
+            .iter()
+            .map(|theme| theme.info().slug())
+            .collect();
+        let unique: HashSet<&String> = slugs.iter().collect();
+        assert_eq!(
+            unique.len(),
+            slugs.len(),
+            "Duplicate slugs found: {:?}",
+            slugs
+        );
+    }
+
+    #[test]
+    fn get_theme_resolves_all_name_variants() {
+        // Hyphenated slug (as stored in config)
+        assert!(get_theme("minimal-retro").is_some());
+        assert!(get_theme("dark-minimal").is_some());
+
+        // Title case display name (as returned by info())
+        assert!(get_theme("Minimal Retro").is_some());
+        assert!(get_theme("Dark Minimal").is_some());
+
+        // Underscored (module directory style)
+        assert!(get_theme("minimal_retro").is_some());
+        assert!(get_theme("dark_minimal").is_some());
+
+        // Single-word themes still work
+        assert!(get_theme("musashi").is_some());
+        assert!(get_theme("Musashi").is_some());
+        assert!(get_theme("obsidian").is_some());
+
+        // Nonexistent theme returns None
+        assert!(get_theme("nonexistent").is_none());
+    }
+
+    #[test]
+    fn slug_round_trips_through_get_theme() {
+        for theme in get_all_themes() {
+            let slug = theme.info().slug();
+            assert!(
+                get_theme(&slug).is_some(),
+                "get_theme failed to resolve slug '{}'",
+                slug
+            );
+        }
+    }
+
+    #[test]
+    fn theme_info_slug_matches_hyphenated_convention() {
+        for theme in get_all_themes() {
+            let slug = theme.info().slug();
+            assert_eq!(slug, slug.to_lowercase(), "slug should be lowercase");
+            assert!(!slug.contains(' '), "slug should not contain spaces");
+            assert!(!slug.contains('_'), "slug should not contain underscores");
+        }
     }
 }

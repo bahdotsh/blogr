@@ -360,7 +360,11 @@ pub async fn handle_set(key: String, value: String) -> Result<()> {
         ["blog", "base_url"] => config.blog.base_url = value.clone(),
         ["blog", "language"] => config.blog.language = Some(value.clone()),
         ["blog", "timezone"] => config.blog.timezone = Some(value.clone()),
-        ["theme", "name"] => config.theme.name = value.clone(),
+        ["theme", "name"] => {
+            let theme = blogr_themes::get_theme(&value)
+                .ok_or_else(|| anyhow::anyhow!("Theme '{}' not found", value))?;
+            config.theme.name = theme.info().slug();
+        }
         _ => {
             anyhow::bail!("Unknown or unsupported configuration key: {}", key);
         }

@@ -1924,9 +1924,9 @@ mod tests {
 
     #[test]
     fn test_compose_newsletter_theme_not_found() {
-        // Default config has "minimal-retro" which doesn't match any theme
         let temp_dir = tempdir().unwrap();
-        let config = Config::default();
+        let mut config = Config::default();
+        config.theme.name = "nonexistent-theme".to_string();
         let newsletter_manager = NewsletterManager::new(config.clone(), temp_dir.path()).unwrap();
         let state = ApiState {
             newsletter_manager: Arc::new(newsletter_manager),

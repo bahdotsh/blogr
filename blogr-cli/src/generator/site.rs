@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::content::{Post, PostManager, PostStatus};
 use crate::project::Project;
 use anyhow::{anyhow, Result};
-use blogr_themes::{get_theme_by_name, SiteType, Theme};
+use blogr_themes::{get_theme, SiteType, Theme};
 use chrono::{Datelike, Utc};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -179,8 +179,8 @@ Thank you!`);
     ) -> Result<Self> {
         // Get theme
         let theme_name = &config.theme.name;
-        let theme = get_theme_by_name(theme_name)
-            .ok_or_else(|| anyhow!("Theme '{}' not found", theme_name))?;
+        let theme =
+            get_theme(theme_name).ok_or_else(|| anyhow!("Theme '{}' not found", theme_name))?;
 
         // Set up template engine (create empty Tera instance)
         let mut tera = Tera::default();
@@ -233,7 +233,7 @@ Thank you!`);
 
     /// Build the entire site
     pub fn build(&self) -> Result<()> {
-        let theme_info = get_theme_by_name(&self.config.theme.name)
+        let theme_info = get_theme(&self.config.theme.name)
             .ok_or(anyhow!(
                 "Theme {} not found in this version of Blogr.",
                 self.config.theme.name
