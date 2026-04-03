@@ -62,7 +62,7 @@ impl ThemeInfo {
     /// Canonical slug for use in config files: lowercase, hyphen-separated.
     #[must_use]
     pub fn slug(&self) -> String {
-        self.name.to_lowercase().replace(' ', "-")
+        normalize_theme_name(&self.name).replace(' ', "-")
     }
 }
 
@@ -135,6 +135,7 @@ pub fn get_theme(name: &str) -> Option<Box<dyn Theme>> {
         .find(|theme| normalize_theme_name(&theme.info().name) == needle)
 }
 
+#[deprecated(since = "0.5.1", note = "Use `get_theme` instead")]
 #[must_use]
 pub fn get_theme_by_name(name: &str) -> Option<Box<dyn Theme>> {
     get_theme(name)
@@ -251,6 +252,18 @@ mod test {
 
         // Nonexistent theme returns None
         assert!(get_theme("nonexistent").is_none());
+    }
+
+    #[test]
+    fn slug_round_trips_through_get_theme() {
+        for theme in get_all_themes() {
+            let slug = theme.info().slug();
+            assert!(
+                get_theme(&slug).is_some(),
+                "get_theme failed to resolve slug '{}'",
+                slug
+            );
+        }
     }
 
     #[test]
