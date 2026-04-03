@@ -123,7 +123,7 @@ pub fn get_all_themes() -> Vec<Box<dyn Theme>> {
 /// Normalize a theme name for comparison by lowercasing and replacing hyphens/underscores with spaces.
 /// This allows `"minimal-retro"`, `"Minimal Retro"`, and `"minimal_retro"` to all match.
 #[must_use]
-pub fn normalize_theme_name(name: &str) -> String {
+fn normalize_theme_name(name: &str) -> String {
     name.to_lowercase().replace(['-', '_'], " ")
 }
 
@@ -133,12 +133,6 @@ pub fn get_theme(name: &str) -> Option<Box<dyn Theme>> {
     get_all_themes()
         .into_iter()
         .find(|theme| normalize_theme_name(&theme.info().name) == needle)
-}
-
-#[deprecated(since = "0.5.1", note = "Use `get_theme` instead")]
-#[must_use]
-pub fn get_theme_by_name(name: &str) -> Option<Box<dyn Theme>> {
-    get_theme(name)
 }
 
 #[cfg(test)]
@@ -229,6 +223,21 @@ mod test {
                 )
             }
         });
+    }
+
+    #[test]
+    fn themes_have_unique_slugs() {
+        let slugs: Vec<String> = get_all_themes()
+            .iter()
+            .map(|theme| theme.info().slug())
+            .collect();
+        let unique: HashSet<&String> = slugs.iter().collect();
+        assert_eq!(
+            unique.len(),
+            slugs.len(),
+            "Duplicate slugs found: {:?}",
+            slugs
+        );
     }
 
     #[test]

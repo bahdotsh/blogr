@@ -863,10 +863,9 @@ impl From<Browse> for EditTheme {
             .map(|theme| theme.info())
             .collect::<Vec<ThemeInfo>>();
 
-        let current_theme_index = options.iter().position(|theme| {
-            blogr_themes::normalize_theme_name(&theme.name)
-                == blogr_themes::normalize_theme_name(&value.config.theme.name)
-        });
+        let current_theme_index = options
+            .iter()
+            .position(|theme| theme.slug() == value.config.theme.name);
 
         let row_index = current_theme_index.unwrap_or(0);
         let mut table_state = TableState::default();

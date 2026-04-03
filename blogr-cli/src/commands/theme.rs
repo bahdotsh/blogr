@@ -80,6 +80,7 @@ pub async fn handle_info(name: String) -> Result<()> {
     // Load theme by name
     if let Some(theme) = get_theme(&name) {
         let info = theme.info();
+        let slug = info.slug();
 
         println!("🎨 Theme: {}", info.name);
         println!("📝 Description: {}", info.description);
@@ -102,9 +103,7 @@ pub async fn handle_info(name: String) -> Result<()> {
         // Check if theme is currently active
         if let Ok(Some(project)) = Project::find_project() {
             if let Ok(config) = project.load_config() {
-                if blogr_themes::normalize_theme_name(&config.theme.name)
-                    == blogr_themes::normalize_theme_name(&name)
-                {
+                if config.theme.name == slug {
                     println!();
                     println!("✅ This theme is currently active");
                 } else {
