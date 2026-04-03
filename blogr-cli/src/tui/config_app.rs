@@ -863,9 +863,10 @@ impl From<Browse> for EditTheme {
             .map(|theme| theme.info())
             .collect::<Vec<ThemeInfo>>();
 
-        let current_theme_index = options
-            .iter()
-            .position(|theme| theme.name == value.config.theme.name);
+        let current_theme_index = options.iter().position(|theme| {
+            blogr_themes::normalize_theme_name(&theme.name)
+                == blogr_themes::normalize_theme_name(&value.config.theme.name)
+        });
 
         let row_index = current_theme_index.unwrap_or(0);
         let mut table_state = TableState::default();
@@ -983,12 +984,13 @@ impl EditTheme {
             .get(self.row_index)
             .expect("Index out of bounds")
             .clone();
+        let theme_slug = theme.slug();
         let default_theme_config = theme
             .config_schema
             .into_iter()
             .map(|(field_name, config)| (field_name, config.value))
             .collect::<HashMap<String, toml::Value>>();
-        self.new_config.set_theme(theme.name, default_theme_config);
+        self.new_config.set_theme(theme_slug, default_theme_config);
         //save
         self.browse_data = save_and_refresh(self.browse_data, self.new_config.clone())?;
         Ok(self.enter_browse_mode())

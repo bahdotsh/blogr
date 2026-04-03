@@ -104,9 +104,7 @@ pub async fn handle_check() -> Result<()> {
     // Check theme availability
     let config = project.load_config()?;
     let theme_name = &config.theme.name;
-    // For now, we'll assume minimal-retro is always available
-    // In the future, this could check against available themes
-    if theme_name != "minimal-retro" {
+    if blogr_themes::get_theme(theme_name).is_none() {
         Console::warn(&format!("Theme '{}' may not be available", theme_name));
     }
 

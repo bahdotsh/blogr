@@ -102,7 +102,9 @@ pub async fn handle_info(name: String) -> Result<()> {
         // Check if theme is currently active
         if let Ok(Some(project)) = Project::find_project() {
             if let Ok(config) = project.load_config() {
-                if config.theme.name == name {
+                if blogr_themes::normalize_theme_name(&config.theme.name)
+                    == blogr_themes::normalize_theme_name(&name)
+                {
                     println!();
                     println!("✅ This theme is currently active");
                 } else {
@@ -176,8 +178,8 @@ pub async fn handle_set(name: String) -> Result<()> {
         ));
     }
 
-    // Update theme name
-    config.theme.name = name.clone();
+    // Update theme name (use canonical slug form for config)
+    config.theme.name = theme.info().slug();
 
     // Load theme configuration schema and update config with defaults
     let theme_info = theme.info();

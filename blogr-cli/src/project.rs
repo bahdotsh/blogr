@@ -233,9 +233,12 @@ impl Project {
             .with_context(|| "Failed to create README.md file")?;
 
         // Create content.md for personal info - theme-specific
-        let content_md = match config.theme.name.as_str() {
-            "musashi" => blogr_themes::MusashiTheme::example_content(&config.blog.author),
-            "dark-minimal" => blogr_themes::DarkMinimalTheme::example_content(&config.blog.author),
+        let resolved_slug = blogr_themes::get_theme(&config.theme.name).map(|t| t.info().slug());
+        let content_md = match resolved_slug.as_deref() {
+            Some("musashi") => blogr_themes::MusashiTheme::example_content(&config.blog.author),
+            Some("dark-minimal") => {
+                blogr_themes::DarkMinimalTheme::example_content(&config.blog.author)
+            }
             _ => {
                 // Generic fallback for other themes
                 format!(
