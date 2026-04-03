@@ -40,7 +40,7 @@ open = "5.3"
 urlencoding = "2.1"
 strum = { version = "0.27.2", features = ["derive"] }
 notify = "7.0"
-notify-debouncer-mini = "0.5"
+notify-debouncer-mini = "0.7"
 tokio-stream = { version = "0.1", features = ["sync"] }
 
 # Newsletter dependencies
